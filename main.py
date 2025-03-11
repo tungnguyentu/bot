@@ -200,7 +200,7 @@ if __name__ == "__main__":
     parser.add_argument("--start-date", type=str, help="Start date for backtest (YYYY-MM-DD)")
     parser.add_argument("--end-date", type=str, help="End date for backtest (YYYY-MM-DD)")
     parser.add_argument("--initial-balance", type=float, default=10000, help="Initial balance for backtest")
-    
+    parser.add_argument("--leverage", type=int, help="Leverage")
     args = parser.parse_args()
     if args.backtest:
         # Run backtest
