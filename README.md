@@ -69,6 +69,11 @@ Edit the `config.py` file to customize:
 - [Installation Guide](INSTALL.md)
 - [Project Structure](PROJECT_STRUCTURE.md)
 - [Backtest Results](RESULTS.md)
+- [Troubleshooting Guide](TROUBLESHOOTING.md)
+
+## Troubleshooting
+
+If you encounter any issues while setting up or running the bot, please refer to the [Troubleshooting Guide](TROUBLESHOOTING.md) for solutions to common problems.
 
 ## Disclaimer
 

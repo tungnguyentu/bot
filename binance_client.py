@@ -5,7 +5,12 @@ Binance client for the AI Trading Bot.
 import os
 import time
 import logging
-import ccxt
+from datetime import datetime
+import pandas as pd
+import numpy as np
+import requests
+from binance.client import Client
+from binance.exceptions import BinanceAPIException
 from dotenv import load_dotenv
 from utils import rate_limit_handler, convert_to_dataframe
 
@@ -42,50 +47,70 @@ class BinanceClient:
             logger.error("Binance API credentials not found.")
             raise ValueError("Binance API credentials not found.")
         
-        # Initialize ccxt client
-        self.exchange = ccxt.binance({
-            'apiKey': self.api_key,
-            'secret': self.api_secret,
-            'enableRateLimit': True,
-            'options': {
-                'defaultType': 'future',
-                'adjustForTimeDifference': True,
-                'testnet': self.testnet,
-                'createMarketBuyOrderRequiresPrice': False,
-                'createMarketSellOrderRequiresPrice': False,
-                'recvWindow': 60000,  # Increase receive window to avoid timestamp errors
-                'warnOnFetchOpenOrdersWithoutSymbol': False,
-                'hedgeMode': False  # Set to True if you want to use hedge mode
-            }
-        })
-        
-        # Load markets to ensure we have the latest trading pairs and limits
+        # Initialize Binance client with timeout and retry
         try:
-            self.exchange.load_markets()
-            logger.info("Markets loaded successfully.")
+            self.client = Client(
+                api_key=self.api_key,
+                api_secret=self.api_secret,
+                testnet=self.testnet,
+                requests_params={'timeout': 30}
+            )
+            
+            # Test connection
+            self._test_connection()
+            
+            logger.info(f"Binance client initialized (testnet: {self.testnet}).")
         except Exception as e:
-            logger.warning(f"Failed to load markets: {e}")
+            logger.error(f"Error initializing Binance client: {e}")
+            if "Invalid API-key" in str(e):
+                logger.error("Invalid API key. Please check your credentials.")
+            elif "Connection" in str(e):
+                logger.error("Connection error. Please check your internet connection.")
+            raise
+    
+    def _test_connection(self):
+        """
+        Test connection to Binance API.
         
-        logger.info(f"Binance client initialized (testnet: {self.testnet}).")
+        Raises:
+            Exception: If connection fails
+        """
+        try:
+            # Try to ping the server
+            self.client.ping()
+            logger.info("Connection to Binance API successful.")
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Connection error: {e}")
+            raise Exception(f"Failed to connect to Binance API: {e}")
+        except Exception as e:
+            logger.error(f"API error: {e}")
+            raise
     
     @rate_limit_handler(max_requests=50, time_window=60, buffer=0.8)
     def get_klines(self, symbol, timeframe, limit=100):
         """
-        Get klines (candlestick data) from Binance.
+        Get klines (candlestick data).
         
         Args:
             symbol (str): Trading symbol
-            timeframe (str): Timeframe (e.g., '5m', '1h')
-            limit (int): Number of klines to get
+            timeframe (str): Timeframe
+            limit (int): Number of candles to get
             
         Returns:
-            pd.DataFrame: DataFrame with OHLCV data
+            pandas.DataFrame: Klines data
         """
         try:
-            # Get klines from Binance
-            klines = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            # Convert timeframe to Binance format
+            interval = self._convert_timeframe(timeframe)
             
-            # Convert to DataFrame
+            # Get klines
+            klines = self.client.get_klines(
+                symbol=symbol,
+                interval=interval,
+                limit=limit
+            )
+            
+            # Convert to dataframe
             df = convert_to_dataframe(klines)
             
             logger.info(f"Got {len(df)} klines for {symbol} ({timeframe}).")
@@ -99,20 +124,20 @@ class BinanceClient:
     @rate_limit_handler(max_requests=50, time_window=60, buffer=0.8)
     def get_order_book(self, symbol, limit=20):
         """
-        Get order book from Binance.
+        Get order book.
         
         Args:
             symbol (str): Trading symbol
-            limit (int): Depth of order book
+            limit (int): Depth of the order book
             
         Returns:
             dict: Order book data
         """
         try:
-            # Get order book from Binance
-            order_book = self.exchange.fetch_order_book(symbol, limit=limit)
+            # Get order book
+            order_book = self.client.get_order_book(symbol=symbol, limit=limit)
             
-            logger.info(f"Got order book for {symbol} (depth: {limit}).")
+            logger.info(f"Got order book for {symbol}.")
             
             return order_book
         
@@ -123,18 +148,18 @@ class BinanceClient:
     @rate_limit_handler(max_requests=50, time_window=60, buffer=0.8)
     def get_account_balance(self):
         """
-        Get account balance from Binance.
+        Get account balance.
         
         Returns:
             dict: Account balance data
         """
         try:
-            # Get account balance from Binance
-            balance = self.exchange.fetch_balance()
+            # Get account information
+            account = self.client.get_account()
             
             logger.info("Got account balance.")
             
-            return balance
+            return account
         
         except Exception as e:
             logger.error(f"Error getting account balance: {e}")
@@ -153,30 +178,52 @@ class BinanceClient:
             dict: Response from Binance
         """
         try:
-            # Make sure we're using the futures API
-            self.exchange.options['defaultType'] = 'future'
-            
-            # Use the fapiPrivatePostLeverage method directly
-            response = self.exchange.fapiPrivate_post_leverage({
-                'symbol': symbol,
-                'leverage': leverage
-            })
+            # Set leverage using the Binance Futures API
+            response = self.client.futures_change_leverage(
+                symbol=symbol,
+                leverage=leverage
+            )
             
             logger.info(f"Set leverage for {symbol} to {leverage}x.")
             
             return response
         
+        except BinanceAPIException as e:
+            logger.error(f"Binance API error setting leverage: {e}")
+            if e.code == -4046:  # Leverage is too high
+                logger.warning(f"Leverage {leverage} is too high for {symbol}. Using maximum allowed leverage.")
+                # Try to get the maximum allowed leverage and set it
+                try:
+                    # Get symbol info
+                    symbol_info = self.client.futures_exchange_info()
+                    max_leverage = 20  # Default max leverage
+                    
+                    # Find the symbol in the exchange info
+                    for s in symbol_info['symbols']:
+                        if s['symbol'] == symbol:
+                            max_leverage = int(s.get('leverageBracket', [{'bracket': 1, 'initialLeverage': 20}])[0]['initialLeverage'])
+                            break
+                    
+                    # Set the maximum allowed leverage
+                    response = self.client.futures_change_leverage(
+                        symbol=symbol,
+                        leverage=max_leverage
+                    )
+                    
+                    logger.info(f"Set leverage for {symbol} to {max_leverage}x (maximum allowed).")
+                    
+                    return response
+                except Exception as e2:
+                    logger.error(f"Error setting maximum leverage: {e2}")
+                    logger.warning(f"Continuing without setting leverage. Default leverage will be used.")
+                    return {"leverage": 1, "symbol": symbol, "status": "default"}
+            else:
+                logger.warning(f"Continuing without setting leverage. Default leverage will be used.")
+                return {"leverage": 1, "symbol": symbol, "status": "default"}
         except Exception as e:
             logger.error(f"Error setting leverage: {e}")
-            # Try alternative method if the first one fails
-            try:
-                logger.info("Trying alternative method to set leverage...")
-                response = self.exchange.set_leverage(leverage=leverage, symbol=symbol)
-                logger.info(f"Successfully set leverage for {symbol} to {leverage}x using alternative method.")
-                return response
-            except Exception as e2:
-                logger.error(f"Error setting leverage with alternative method: {e2}")
-                raise
+            logger.warning(f"Continuing without setting leverage. Default leverage will be used.")
+            return {"leverage": 1, "symbol": symbol, "status": "default"}
     
     @rate_limit_handler(max_requests=50, time_window=60, buffer=0.8)
     def create_market_order(self, symbol, side, amount):
@@ -193,11 +240,11 @@ class BinanceClient:
         """
         try:
             # Create market order
-            order = self.exchange.create_order(
+            order = self.client.futures_create_order(
                 symbol=symbol,
-                type='market',
-                side=side,
-                amount=amount
+                side=side.upper(),
+                type='MARKET',
+                quantity=amount
             )
             
             logger.info(f"Created market {side} order for {amount} {symbol}.")
@@ -224,11 +271,12 @@ class BinanceClient:
         """
         try:
             # Create limit order
-            order = self.exchange.create_order(
+            order = self.client.futures_create_order(
                 symbol=symbol,
-                type='limit',
-                side=side,
-                amount=amount,
+                side=side.upper(),
+                type='LIMIT',
+                timeInForce='GTC',
+                quantity=amount,
                 price=price
             )
             
@@ -250,29 +298,32 @@ class BinanceClient:
             side (str): Order side ('buy' or 'sell')
             amount (float): Order amount
             stop_price (float): Stop price
-            price (float): Limit price (optional, for stop-limit orders)
+            price (float, optional): Limit price (for stop-limit orders)
             
         Returns:
             dict: Order data
         """
         try:
             # Determine order type
-            order_type = 'stop_market' if price is None else 'stop_limit'
+            order_type = 'STOP_MARKET' if price is None else 'STOP'
             
             # Create stop loss order
-            params = {'stopPrice': stop_price}
+            order_params = {
+                'symbol': symbol,
+                'side': side.upper(),
+                'type': order_type,
+                'quantity': amount,
+                'stopPrice': stop_price
+            }
+            
+            # Add price for stop-limit orders
             if price is not None:
-                params['price'] = price
+                order_params['price'] = price
+                order_params['timeInForce'] = 'GTC'
             
-            order = self.exchange.create_order(
-                symbol=symbol,
-                type=order_type,
-                side=side,
-                amount=amount,
-                params=params
-            )
+            order = self.client.futures_create_order(**order_params)
             
-            logger.info(f"Created {order_type} {side} order for {amount} {symbol} at {stop_price}.")
+            logger.info(f"Created stop loss {side} order for {amount} {symbol} at {stop_price}.")
             
             return order
         
@@ -290,29 +341,32 @@ class BinanceClient:
             side (str): Order side ('buy' or 'sell')
             amount (float): Order amount
             stop_price (float): Stop price
-            price (float): Limit price (optional, for take-profit-limit orders)
+            price (float, optional): Limit price (for take-profit-limit orders)
             
         Returns:
             dict: Order data
         """
         try:
             # Determine order type
-            order_type = 'take_profit_market' if price is None else 'take_profit_limit'
+            order_type = 'TAKE_PROFIT_MARKET' if price is None else 'TAKE_PROFIT'
             
             # Create take profit order
-            params = {'stopPrice': stop_price}
+            order_params = {
+                'symbol': symbol,
+                'side': side.upper(),
+                'type': order_type,
+                'quantity': amount,
+                'stopPrice': stop_price
+            }
+            
+            # Add price for take-profit-limit orders
             if price is not None:
-                params['price'] = price
+                order_params['price'] = price
+                order_params['timeInForce'] = 'GTC'
             
-            order = self.exchange.create_order(
-                symbol=symbol,
-                type=order_type,
-                side=side,
-                amount=amount,
-                params=params
-            )
+            order = self.client.futures_create_order(**order_params)
             
-            logger.info(f"Created {order_type} {side} order for {amount} {symbol} at {stop_price}.")
+            logger.info(f"Created take profit {side} order for {amount} {symbol} at {stop_price}.")
             
             return order
         
@@ -334,7 +388,10 @@ class BinanceClient:
         """
         try:
             # Cancel order
-            response = self.exchange.cancel_order(order_id, symbol)
+            response = self.client.futures_cancel_order(
+                symbol=symbol,
+                orderId=order_id
+            )
             
             logger.info(f"Cancelled order {order_id} for {symbol}.")
             
@@ -350,16 +407,19 @@ class BinanceClient:
         Get open orders.
         
         Args:
-            symbol (str): Trading symbol (optional)
+            symbol (str, optional): Trading symbol
             
         Returns:
             list: Open orders
         """
         try:
             # Get open orders
-            open_orders = self.exchange.fetch_open_orders(symbol=symbol)
+            if symbol:
+                open_orders = self.client.futures_get_open_orders(symbol=symbol)
+            else:
+                open_orders = self.client.futures_get_open_orders()
             
-            logger.info(f"Got {len(open_orders)} open orders{' for ' + symbol if symbol else ''}.")
+            logger.info(f"Got {len(open_orders)} open orders.")
             
             return open_orders
         
@@ -373,19 +433,23 @@ class BinanceClient:
         Get positions.
         
         Args:
-            symbol (str): Trading symbol (optional)
+            symbol (str, optional): Trading symbol
             
         Returns:
             list: Positions
         """
         try:
             # Get positions
-            positions = self.exchange.fetch_positions(symbol=symbol)
+            positions = self.client.futures_position_information()
+            
+            # Filter by symbol if provided
+            if symbol:
+                positions = [p for p in positions if p['symbol'] == symbol]
             
             # Filter out positions with zero amount
-            positions = [p for p in positions if float(p['contracts']) > 0]
+            positions = [p for p in positions if float(p['positionAmt']) != 0]
             
-            logger.info(f"Got {len(positions)} positions{' for ' + symbol if symbol else ''}.")
+            logger.info(f"Got {len(positions)} positions.")
             
             return positions
         
@@ -406,31 +470,33 @@ class BinanceClient:
             dict: Order data
         """
         try:
-            # Get positions
-            positions = self.get_positions(symbol=symbol)
+            # Get position
+            positions = self.get_positions(symbol)
             
-            # Find position to close
+            # Find the position to close
             position = None
             for p in positions:
-                if p['side'] == 'long' and position_type == 'long':
-                    position = p
-                    break
-                elif p['side'] == 'short' and position_type == 'short':
-                    position = p
-                    break
+                if p['symbol'] == symbol:
+                    position_amt = float(p['positionAmt'])
+                    if (position_type == 'long' and position_amt > 0) or (position_type == 'short' and position_amt < 0):
+                        position = p
+                        break
             
             if not position:
                 logger.warning(f"No {position_type} position found for {symbol}.")
                 return None
             
-            # Determine side for closing position
-            side = 'sell' if position_type == 'long' else 'buy'
+            # Determine side and amount
+            side = 'SELL' if position_type == 'long' else 'BUY'
+            amount = abs(float(position['positionAmt']))
             
-            # Close position
-            order = self.create_market_order(
+            # Create market order to close position
+            order = self.client.futures_create_order(
                 symbol=symbol,
                 side=side,
-                amount=float(position['contracts'])
+                type='MARKET',
+                quantity=amount,
+                reduceOnly=True
             )
             
             logger.info(f"Closed {position_type} position for {symbol}.")
@@ -439,4 +505,17 @@ class BinanceClient:
         
         except Exception as e:
             logger.error(f"Error closing position: {e}")
-            raise 
+            raise
+    
+    def _convert_timeframe(self, timeframe):
+        """
+        Convert timeframe to Binance format.
+        
+        Args:
+            timeframe (str): Timeframe
+            
+        Returns:
+            str: Binance timeframe format
+        """
+        # Binance uses the same format as our timeframe (e.g., '5m', '1h', '1d')
+        return timeframe 

@@ -8,6 +8,7 @@ import logging
 import argparse
 from datetime import datetime
 from dotenv import load_dotenv
+import requests
 
 import config
 from utils import setup_logger
@@ -30,6 +31,8 @@ def run_bot(test_mode=False):
     Args:
         test_mode (bool): Run in test mode (no real trades)
     """
+    telegram_notifier = None  # Initialize to None to avoid UnboundLocalError
+    
     try:
         logger.info("Starting AI Trading Bot...")
         
@@ -37,12 +40,13 @@ def run_bot(test_mode=False):
         try:
             binance_client = BinanceClient(testnet=test_mode)
         except Exception as e:
-            if "Invalid Api-Key" in str(e):
+            logger.error(f"Failed to initialize Binance client: {e}")
+            if "Invalid API" in str(e):
                 logger.error("Invalid Binance API credentials. Please check your .env file.")
                 logger.error("For testnet, you need to generate API keys from https://testnet.binancefuture.com/")
-                return
-            else:
-                raise
+            elif "Connection" in str(e):
+                logger.error("Connection error. Please check your internet connection.")
+            return
         
         # Initialize Telegram notifier
         try:
@@ -59,11 +63,13 @@ def run_bot(test_mode=False):
             binance_client.set_leverage(config.SYMBOL, config.LEVERAGE)
         except Exception as e:
             logger.error(f"Error setting leverage: {e}")
-            if "Invalid Api-Key" in str(e):
+            if "Invalid API" in str(e):
                 logger.error("Invalid Binance API credentials. Please check your .env file.")
                 logger.error("For testnet, you need to generate API keys from https://testnet.binancefuture.com/")
                 return
-            # Continue without setting leverage
+            else:
+                logger.warning(f"Continuing with default leverage. Some features may be limited.")
+                # Continue without setting leverage
         
         # Send startup notification
         if telegram_notifier:
@@ -79,6 +85,9 @@ def run_bot(test_mode=False):
         logger.info(f"Mode: {'TEST' if test_mode else 'LIVE'}")
         
         # Main loop
+        retry_count = 0
+        max_retries = 3
+        
         while True:
             try:
                 # Analyze market
@@ -90,8 +99,29 @@ def run_bot(test_mode=False):
                 # Manage positions
                 strategy.manage_positions()
                 
+                # Reset retry count on successful iteration
+                retry_count = 0
+                
                 # Sleep until next candle
                 time.sleep(60)  # Check every minute
+            
+            except requests.exceptions.RequestException as e:
+                retry_count += 1
+                logger.error(f"Connection error in main loop (attempt {retry_count}/{max_retries}): {e}")
+                
+                if retry_count >= max_retries:
+                    logger.error(f"Maximum retries ({max_retries}) reached. Exiting.")
+                    if telegram_notifier:
+                        try:
+                            telegram_notifier.notify_error(f"Bot stopped after {max_retries} failed connection attempts.")
+                        except Exception as notify_error:
+                            logger.error(f"Error sending Telegram notification: {notify_error}")
+                    break
+                
+                # Wait before retrying with exponential backoff
+                wait_time = 60 * (2 ** (retry_count - 1))  # 60s, 120s, 240s, ...
+                logger.info(f"Waiting {wait_time} seconds before retrying...")
+                time.sleep(wait_time)
             
             except Exception as e:
                 logger.error(f"Error in main loop: {e}")

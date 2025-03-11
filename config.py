@@ -45,4 +45,9 @@ RATE_LIMIT_BUFFER = 0.8  # Use only 80% of available rate limit
 
 # Logging settings
 LOG_LEVEL = "INFO"
-SAVE_TRADE_HISTORY = True 
+SAVE_TRADE_HISTORY = True
+
+# Backtest settings
+DEFAULT_START_DATE = "2023-01-01"
+DEFAULT_END_DATE = "2023-06-01"
+DEFAULT_INITIAL_BALANCE = 10000 
