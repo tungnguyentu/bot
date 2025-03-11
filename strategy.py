@@ -177,7 +177,7 @@ class ScalpingStrategy(Strategy):
                 latest['rsi'] > self.rsi_overbought
             )
             
-            return {
+            result = {
                 'timestamp': datetime.now(),
                 'symbol': self.symbol,
                 'price': latest['close'],
@@ -188,6 +188,8 @@ class ScalpingStrategy(Strategy):
                 'long_signal': long_signal,
                 'short_signal': short_signal
             }
+            logger.info(f"Scalping strategy analysis: {result}")
+            return result
             
         except Exception as e:
             logger.error(f"Error analyzing market: {e}")
@@ -224,45 +226,48 @@ class SwingStrategy(Strategy):
             )
             
             # Calculate indicators
-            macd_data = calculate_macd(
+            macd_line, signal_line, histogram = calculate_macd(
                 klines,
                 fast_period=self.macd_fast,
                 slow_period=self.macd_slow,
                 signal_period=self.macd_signal
             )
-            bb_data = calculate_bollinger_bands(
+            middle_band, upper_band, lower_band = calculate_bollinger_bands(
                 klines,
                 period=self.bb_period,
-                std=self.bb_std
+                std_dev=self.bb_std
             )
             
             # Get latest data
             latest = klines.iloc[-1]
-            latest_macd = macd_data.iloc[-1]
-            latest_bb = bb_data.iloc[-1]
+            latest_macd = macd_line.iloc[-1]
+            latest_signal = signal_line.iloc[-1]
             
             # Generate signals
             long_signal = (
-                latest_macd['macd'] > latest_macd['signal'] and  # MACD crossover
-                latest['close'] < latest_bb['lower_band']  # Price below lower BB
+                latest_macd > latest_signal and  # MACD crossover
+                latest['close'] < lower_band.iloc[-1]  # Price below lower BB
             )
             
             short_signal = (
-                latest_macd['macd'] < latest_macd['signal'] and  # MACD crossunder
-                latest['close'] > latest_bb['upper_band']  # Price above upper BB
+                latest_macd < latest_signal and  # MACD crossunder
+                latest['close'] > upper_band.iloc[-1]  # Price above upper BB
             )
             
-            return {
+            result = {
                 'timestamp': datetime.now(),
                 'symbol': self.symbol,
                 'price': latest['close'],
-                'macd': latest_macd['macd'],
-                'macd_signal': latest_macd['signal'],
-                'bb_upper': latest_bb['upper_band'],
-                'bb_lower': latest_bb['lower_band'],
+                'macd': latest_macd,
+                'signal': latest_signal,
+                'middle_band': middle_band.iloc[-1],
+                'upper_band': upper_band.iloc[-1],
+                'lower_band': lower_band.iloc[-1],
                 'long_signal': long_signal,
                 'short_signal': short_signal
             }
+            logger.info(f"Swing strategy analysis: {result}")
+            return result
             
         except Exception as e:
             logger.error(f"Error analyzing market: {e}")
