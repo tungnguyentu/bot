@@ -134,7 +134,7 @@ class ScalpingStrategy:
             }
             
             logger.info(f"Market analysis completed for {self.symbol}.")
-            logger.debug(f"Analysis results: {analysis}")
+            logger.info(f"Analysis results: {analysis}")
             
             return analysis
         
