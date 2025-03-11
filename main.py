@@ -38,7 +38,11 @@ def run_bot(test_mode=False):
         
         # Initialize Binance client
         try:
-            binance_client = BinanceClient(testnet=test_mode)
+            binance_client = BinanceClient(
+                api_key=os.getenv('BINANCE_API_KEY'),
+                api_secret=os.getenv('BINANCE_API_SECRET'),
+                testnet=test_mode
+            )
         except Exception as e:
             logger.error(f"Failed to initialize Binance client: {e}")
             if "Invalid API" in str(e):
