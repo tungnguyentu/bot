@@ -141,11 +141,8 @@ class BinanceClient:
             dict: Response from Binance
         """
         try:
-            # Set leverage
-            response = self.exchange.fapiPrivate_post_leverage({
-                'symbol': symbol.replace('/', ''),
-                'leverage': leverage
-            })
+            # Set leverage using the correct futures API method
+            response = self.exchange.set_leverage(leverage=leverage, symbol=symbol)
             
             logger.info(f"Set leverage for {symbol} to {leverage}x.")
             

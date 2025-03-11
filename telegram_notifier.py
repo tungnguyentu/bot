@@ -7,6 +7,7 @@ import logging
 import telegram
 from telegram.ext import Updater
 from dotenv import load_dotenv
+from datetime import datetime
 
 # Load environment variables
 load_dotenv()
@@ -131,7 +132,7 @@ class TelegramNotifier:
         """
         message = f"⚠️ *ERROR*\n\n" \
                  f"{error_message}\n" \
-                 f"*Time:* {telegram.utils.helpers.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                 f"*Time:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         
         self.send_message(message)
     
