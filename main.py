@@ -24,7 +24,7 @@ load_dotenv()
 logger = setup_logger(config.LOG_LEVEL)
 
 
-def run_bot(test_mode=False):
+def run_bot(test_mode=False, api_key=None, api_secret=None):
     """
     Run the trading bot.
     
@@ -39,8 +39,8 @@ def run_bot(test_mode=False):
         # Initialize Binance client
         try:
             binance_client = BinanceClient(
-                api_key=os.getenv('BINANCE_API_KEY'),
-                api_secret=os.getenv('BINANCE_API_SECRET'),
+                api_key=api_key,
+                api_secret=api_secret,
                 testnet=test_mode
             )
         except Exception as e:
@@ -202,7 +202,8 @@ if __name__ == "__main__":
     parser.add_argument("--initial-balance", type=float, default=10000, help="Initial balance for backtest")
     
     args = parser.parse_args()
-    
+    print(os.getenv('BINANCE_API_KEY'))
+    print(os.getenv('BINANCE_API_SECRET'))
     if args.backtest:
         # Run backtest
         run_backtest(
@@ -214,4 +215,8 @@ if __name__ == "__main__":
         )
     else:
         # Run bot
-        run_bot(test_mode=args.test) 
+        run_bot(
+            test_mode=args.test,
+            api_key=os.getenv('BINANCE_API_KEY'),
+            api_secret=os.getenv('BINANCE_API_SECRET')
+        )
