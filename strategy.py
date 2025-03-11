@@ -320,7 +320,7 @@ class BreakoutStrategy(Strategy):
                 latest['close'] < latest['open']  # Red candle
             )
             
-            return {
+            result =  {
                 'timestamp': datetime.now(),
                 'symbol': self.symbol,
                 'price': latest['close'],
@@ -331,7 +331,8 @@ class BreakoutStrategy(Strategy):
                 'long_signal': long_signal,
                 'short_signal': short_signal
             }
-            
+            logger.info(f"Breakout strategy analysis: {result}")
+            return result
         except Exception as e:
             logger.error(f"Error analyzing market: {e}")
             if self.telegram_notifier:
