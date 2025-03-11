@@ -162,20 +162,27 @@ class ScalpingStrategy(Strategy):
             
             # Get latest data
             latest = klines.iloc[-1]
+            prev = klines.iloc[-2]
             
-            # Determine trend based on VWAP
-            trend = 'bullish' if latest['close'] > latest['vwap'] else 'bearish'
+            # Determine trend based on VWAP and price action
+            trend = 'bullish' if (latest['close'] > latest['vwap'] and latest['close'] > prev['close']) else 'bearish'
             
-            # Generate signals
+            # Generate signals with momentum confirmation
             long_signal = (
                 trend == 'bullish' and
-                latest['rsi'] < self.rsi_oversold
+                latest['rsi'] < self.rsi_oversold and
+                latest['close'] > latest['open']  # Green candle confirmation
             )
             
             short_signal = (
                 trend == 'bearish' and
-                latest['rsi'] > self.rsi_overbought
+                latest['rsi'] > self.rsi_overbought and
+                latest['close'] < latest['open']  # Red candle confirmation
             )
+            
+            # Debug logging
+            logger.info(f"Scalping Analysis - Price: {latest['close']:.2f}, RSI: {latest['rsi']:.2f}, VWAP: {latest['vwap']:.2f}")
+            logger.info(f"Scalping Conditions - Trend: {trend}, RSI Oversold: {latest['rsi'] < self.rsi_oversold}, RSI Overbought: {latest['rsi'] > self.rsi_overbought}")
             
             result = {
                 'timestamp': datetime.now(),
@@ -188,7 +195,10 @@ class ScalpingStrategy(Strategy):
                 'long_signal': long_signal,
                 'short_signal': short_signal
             }
-            logger.info(f"Scalping strategy analysis: {result}")
+            
+            if long_signal or short_signal:
+                logger.info(f"Scalping Signal Generated - Long: {long_signal}, Short: {short_signal}")
+            
             return result
             
         except Exception as e:
@@ -240,19 +250,31 @@ class SwingStrategy(Strategy):
             
             # Get latest data
             latest = klines.iloc[-1]
+            prev = klines.iloc[-2]
             latest_macd = macd_line.iloc[-1]
             latest_signal = signal_line.iloc[-1]
+            prev_macd = macd_line.iloc[-2]
+            prev_signal = signal_line.iloc[-2]
             
-            # Generate signals
+            # Generate signals with trend confirmation
             long_signal = (
-                latest_macd > latest_signal and  # MACD crossover
-                latest['close'] < lower_band.iloc[-1]  # Price below lower BB
+                latest_macd > latest_signal and  # Current MACD crossover
+                prev_macd <= prev_signal and  # Confirm crossover just happened
+                latest['close'] < lower_band.iloc[-1] and  # Price below lower BB
+                latest['close'] > latest['open']  # Green candle confirmation
             )
             
             short_signal = (
-                latest_macd < latest_signal and  # MACD crossunder
-                latest['close'] > upper_band.iloc[-1]  # Price above upper BB
+                latest_macd < latest_signal and  # Current MACD crossunder
+                prev_macd >= prev_signal and  # Confirm crossunder just happened
+                latest['close'] > upper_band.iloc[-1] and  # Price above upper BB
+                latest['close'] < latest['open']  # Red candle confirmation
             )
+            
+            # Debug logging
+            logger.info(f"Swing Analysis - Price: {latest['close']:.2f}, MACD: {latest_macd:.2f}, Signal: {latest_signal:.2f}")
+            logger.info(f"Swing BB Levels - Lower: {lower_band.iloc[-1]:.2f}, Middle: {middle_band.iloc[-1]:.2f}, Upper: {upper_band.iloc[-1]:.2f}")
+            logger.info(f"Swing Conditions - MACD Cross: {latest_macd > latest_signal}, Price vs BB: {latest['close'] < lower_band.iloc[-1] or latest['close'] > upper_band.iloc[-1]}")
             
             result = {
                 'timestamp': datetime.now(),
@@ -266,7 +288,10 @@ class SwingStrategy(Strategy):
                 'long_signal': long_signal,
                 'short_signal': short_signal
             }
-            logger.info(f"Swing strategy analysis: {result}")
+            
+            if long_signal or short_signal:
+                logger.info(f"Swing Signal Generated - Long: {long_signal}, Short: {short_signal}")
+            
             return result
             
         except Exception as e:
@@ -305,27 +330,39 @@ class BreakoutStrategy(Strategy):
             klines['atr'] = calculate_atr(klines, period=self.atr_period)
             klines['volume_spike'] = detect_volume_spike(klines, threshold=self.volume_threshold)
             
-            # Calculate recent high/low
+            # Calculate recent high/low with shorter period for more opportunities
             recent_high = klines['high'].rolling(window=self.breakout_period).max()
             recent_low = klines['low'].rolling(window=self.breakout_period).min()
             
             # Get latest data
             latest = klines.iloc[-1]
+            prev = klines.iloc[-2]
             
-            # Generate signals
+            # Calculate average volume for volume confirmation
+            avg_volume = klines['volume'].rolling(window=self.breakout_period).mean().iloc[-1]
+            volume_confirmed = latest['volume'] > avg_volume * self.volume_threshold
+            
+            # Generate signals with multiple confirmations
             long_signal = (
                 latest['close'] > recent_high.iloc[-2] and  # Break above recent high
-                latest['volume_spike'] and  # Confirmed by volume
-                latest['close'] > latest['open']  # Green candle
+                latest['close'] > latest['open'] and  # Green candle
+                volume_confirmed and  # Volume confirmation
+                latest['close'] > latest['close'] * (1 + 0.001)  # Minimum price movement
             )
             
             short_signal = (
                 latest['close'] < recent_low.iloc[-2] and  # Break below recent low
-                latest['volume_spike'] and  # Confirmed by volume
-                latest['close'] < latest['open']  # Red candle
+                latest['close'] < latest['open'] and  # Red candle
+                volume_confirmed and  # Volume confirmation
+                latest['close'] < latest['close'] * (1 - 0.001)  # Minimum price movement
             )
             
-            result =  {
+            # Debug logging
+            logger.info(f"Breakout Analysis - Price: {latest['close']:.2f}, Recent High: {recent_high.iloc[-2]:.2f}, Recent Low: {recent_low.iloc[-2]:.2f}")
+            logger.info(f"Breakout Conditions - Volume Confirmed: {volume_confirmed}, Candle: {'Green' if latest['close'] > latest['open'] else 'Red'}")
+            logger.info(f"Breakout Levels - Break High: {latest['close'] > recent_high.iloc[-2]}, Break Low: {latest['close'] < recent_low.iloc[-2]}")
+            
+            result = {
                 'timestamp': datetime.now(),
                 'symbol': self.symbol,
                 'price': latest['close'],
@@ -336,8 +373,12 @@ class BreakoutStrategy(Strategy):
                 'long_signal': long_signal,
                 'short_signal': short_signal
             }
-            logger.info(f"Breakout strategy analysis: {result}")
+            
+            if long_signal or short_signal:
+                logger.info(f"Breakout Signal Generated - Long: {long_signal}, Short: {short_signal}")
+            
             return result
+            
         except Exception as e:
             logger.error(f"Error analyzing market: {e}")
             if self.telegram_notifier:
