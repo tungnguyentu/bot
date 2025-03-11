@@ -50,9 +50,21 @@ class BinanceClient:
             'options': {
                 'defaultType': 'future',
                 'adjustForTimeDifference': True,
-                'testnet': self.testnet
+                'testnet': self.testnet,
+                'createMarketBuyOrderRequiresPrice': False,
+                'createMarketSellOrderRequiresPrice': False,
+                'recvWindow': 60000,  # Increase receive window to avoid timestamp errors
+                'warnOnFetchOpenOrdersWithoutSymbol': False,
+                'hedgeMode': False  # Set to True if you want to use hedge mode
             }
         })
+        
+        # Load markets to ensure we have the latest trading pairs and limits
+        try:
+            self.exchange.load_markets()
+            logger.info("Markets loaded successfully.")
+        except Exception as e:
+            logger.warning(f"Failed to load markets: {e}")
         
         logger.info(f"Binance client initialized (testnet: {self.testnet}).")
     
@@ -141,8 +153,14 @@ class BinanceClient:
             dict: Response from Binance
         """
         try:
-            # Set leverage using the correct futures API method
-            response = self.exchange.set_leverage(leverage=leverage, symbol=symbol)
+            # Make sure we're using the futures API
+            self.exchange.options['defaultType'] = 'future'
+            
+            # Use the fapiPrivatePostLeverage method directly
+            response = self.exchange.fapiPrivate_post_leverage({
+                'symbol': symbol,
+                'leverage': leverage
+            })
             
             logger.info(f"Set leverage for {symbol} to {leverage}x.")
             
@@ -150,7 +168,15 @@ class BinanceClient:
         
         except Exception as e:
             logger.error(f"Error setting leverage: {e}")
-            raise
+            # Try alternative method if the first one fails
+            try:
+                logger.info("Trying alternative method to set leverage...")
+                response = self.exchange.set_leverage(leverage=leverage, symbol=symbol)
+                logger.info(f"Successfully set leverage for {symbol} to {leverage}x using alternative method.")
+                return response
+            except Exception as e2:
+                logger.error(f"Error setting leverage with alternative method: {e2}")
+                raise
     
     @rate_limit_handler(max_requests=50, time_window=60, buffer=0.8)
     def create_market_order(self, symbol, side, amount):

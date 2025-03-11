@@ -89,7 +89,7 @@ class TelegramNotifier:
                  f"*Position Size:* {position_size:.4f}\n" \
                  f"*Stop Loss:* {stop_loss:.2f}\n" \
                  f"*Take Profit:* {take_profit:.2f}\n" \
-                 f"*Time:* {telegram.utils.helpers.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                 f"*Time:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         
         self.send_message(message)
     
@@ -119,7 +119,7 @@ class TelegramNotifier:
                  f"*Entry Price:* {entry_price:.2f}\n" \
                  f"*Exit Price:* {exit_price:.2f}\n" \
                  f"*P/L:* {profit_loss:.4f} ({profit_loss_percent:.2f}%)\n" \
-                 f"*Time:* {telegram.utils.helpers.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                 f"*Time:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         
         self.send_message(message)
     
@@ -145,6 +145,6 @@ class TelegramNotifier:
         """
         message = f"ℹ️ *SYSTEM STATUS*\n\n" \
                  f"{status_message}\n" \
-                 f"*Time:* {telegram.utils.helpers.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                 f"*Time:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         
         self.send_message(message) 

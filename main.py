@@ -34,23 +34,46 @@ def run_bot(test_mode=False):
         logger.info("Starting AI Trading Bot...")
         
         # Initialize Binance client
-        binance_client = BinanceClient(testnet=test_mode)
+        try:
+            binance_client = BinanceClient(testnet=test_mode)
+        except Exception as e:
+            if "Invalid Api-Key" in str(e):
+                logger.error("Invalid Binance API credentials. Please check your .env file.")
+                logger.error("For testnet, you need to generate API keys from https://testnet.binancefuture.com/")
+                return
+            else:
+                raise
         
         # Initialize Telegram notifier
-        telegram_notifier = TelegramNotifier() if config.ENABLE_TELEGRAM else None
+        try:
+            telegram_notifier = TelegramNotifier() if config.ENABLE_TELEGRAM else None
+        except Exception as e:
+            logger.error(f"Failed to initialize Telegram bot: {e}")
+            telegram_notifier = None
         
         # Initialize strategy
         strategy = ScalpingStrategy(binance_client, telegram_notifier)
         
         # Set leverage
-        binance_client.set_leverage(config.SYMBOL, config.LEVERAGE)
+        try:
+            binance_client.set_leverage(config.SYMBOL, config.LEVERAGE)
+        except Exception as e:
+            logger.error(f"Error setting leverage: {e}")
+            if "Invalid Api-Key" in str(e):
+                logger.error("Invalid Binance API credentials. Please check your .env file.")
+                logger.error("For testnet, you need to generate API keys from https://testnet.binancefuture.com/")
+                return
+            # Continue without setting leverage
         
         # Send startup notification
         if telegram_notifier:
-            telegram_notifier.notify_system_status(
-                f"AI Trading Bot started for {config.SYMBOL} ({config.TIMEFRAME}).\n"
-                f"Mode: {'TEST' if test_mode else 'LIVE'}"
-            )
+            try:
+                telegram_notifier.notify_system_status(
+                    f"AI Trading Bot started for {config.SYMBOL} ({config.TIMEFRAME}).\n"
+                    f"Mode: {'TEST' if test_mode else 'LIVE'}"
+                )
+            except Exception as e:
+                logger.error(f"Error sending Telegram notification: {e}")
         
         logger.info(f"Bot initialized for {config.SYMBOL} ({config.TIMEFRAME}).")
         logger.info(f"Mode: {'TEST' if test_mode else 'LIVE'}")
@@ -73,18 +96,27 @@ def run_bot(test_mode=False):
             except Exception as e:
                 logger.error(f"Error in main loop: {e}")
                 if telegram_notifier:
-                    telegram_notifier.notify_error(f"Error in main loop: {e}")
+                    try:
+                        telegram_notifier.notify_error(f"Error in main loop: {e}")
+                    except Exception as notify_error:
+                        logger.error(f"Error sending Telegram notification: {notify_error}")
                 time.sleep(60)  # Wait before retrying
     
     except KeyboardInterrupt:
         logger.info("Bot stopped by user.")
         if telegram_notifier:
-            telegram_notifier.notify_system_status("Bot stopped by user.")
+            try:
+                telegram_notifier.notify_system_status("Bot stopped by user.")
+            except Exception as e:
+                logger.error(f"Error sending Telegram notification: {e}")
     
     except Exception as e:
         logger.error(f"Critical error: {e}")
         if telegram_notifier:
-            telegram_notifier.notify_error(f"Critical error: {e}")
+            try:
+                telegram_notifier.notify_error(f"Critical error: {e}")
+            except Exception as notify_error:
+                logger.error(f"Error sending Telegram notification: {notify_error}")
 
 
 def run_backtest(symbol=None, timeframe=None, start_date=None, end_date=None, initial_balance=10000):
