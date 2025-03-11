@@ -24,7 +24,7 @@ load_dotenv()
 logger = setup_logger(config.LOG_LEVEL)
 
 
-def run_bot(test_mode=False, api_key=None, api_secret=None):
+def run_bot(test_mode=False, api_key=None, api_secret=None, symbol=None, leverage=None, timeframe=None):
     """
     Run the trading bot.
     
@@ -64,7 +64,7 @@ def run_bot(test_mode=False, api_key=None, api_secret=None):
         
         # Set leverage
         try:
-            binance_client.set_leverage(config.SYMBOL, config.LEVERAGE)
+            binance_client.set_leverage(symbol, leverage)
         except Exception as e:
             logger.error(f"Error setting leverage: {e}")
             if "Invalid API" in str(e):
@@ -79,13 +79,13 @@ def run_bot(test_mode=False, api_key=None, api_secret=None):
         if telegram_notifier:
             try:
                 telegram_notifier.notify_system_status(
-                    f"AI Trading Bot started for {config.SYMBOL} ({config.TIMEFRAME}).\n"
+                    f"AI Trading Bot started for {symbol} ({timeframe}).\n"
                     f"Mode: {'TEST' if test_mode else 'LIVE'}"
                 )
             except Exception as e:
                 logger.error(f"Error sending Telegram notification: {e}")
         
-        logger.info(f"Bot initialized for {config.SYMBOL} ({config.TIMEFRAME}).")
+        logger.info(f"Bot initialized for {symbol} ({timeframe}).")
         logger.info(f"Mode: {'TEST' if test_mode else 'LIVE'}")
         
         # Main loop
@@ -202,8 +202,6 @@ if __name__ == "__main__":
     parser.add_argument("--initial-balance", type=float, default=10000, help="Initial balance for backtest")
     
     args = parser.parse_args()
-    print(os.getenv('BINANCE_API_KEY'))
-    print(os.getenv('BINANCE_API_SECRET'))
     if args.backtest:
         # Run backtest
         run_backtest(
@@ -218,5 +216,8 @@ if __name__ == "__main__":
         run_bot(
             test_mode=args.test,
             api_key=os.getenv('BINANCE_API_KEY'),
-            api_secret=os.getenv('BINANCE_API_SECRET')
+            api_secret=os.getenv('BINANCE_API_SECRET'),
+            symbol=args.symbol,
+            leverage=args.leverage,
+            timeframe=args.timeframe
         )
