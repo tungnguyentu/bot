@@ -12,7 +12,9 @@ from indicators import (
     calculate_vwap, 
     calculate_atr, 
     detect_volume_spike,
-    calculate_order_book_imbalance
+    calculate_order_book_imbalance,
+    calculate_bollinger_bands,
+    calculate_macd
 )
 from utils import (
     calculate_take_profit_price,
@@ -25,18 +27,21 @@ from utils import (
 logger = logging.getLogger('trading_bot')
 
 
-class ScalpingStrategy:
+class Strategy:
     """
-    Scalping strategy for the trading bot.
+    Base strategy class for the trading bot.
     """
     
     def __init__(self, binance_client, telegram_notifier=None, symbol=None, timeframe=None, leverage=None):
         """
-        Initialize the scalping strategy.
+        Initialize the base strategy.
         
         Args:
             binance_client (BinanceClient): Binance client
             telegram_notifier (TelegramNotifier, optional): Telegram notifier
+            symbol (str): Trading symbol
+            timeframe (str): Trading timeframe
+            leverage (int): Trading leverage
         """
         self.binance_client = binance_client
         self.telegram_notifier = telegram_notifier
@@ -44,14 +49,6 @@ class ScalpingStrategy:
         self.timeframe = timeframe
         self.leverage = leverage
         self.active_positions = {}
-        
-        # Strategy parameters
-        self.rsi_period = config.RSI_PERIOD
-        self.rsi_overbought = config.RSI_OVERBOUGHT
-        self.rsi_oversold = config.RSI_OVERSOLD
-        self.vwap_period = config.VWAP_PERIOD
-        self.atr_period = config.ATR_PERIOD
-        self.volume_threshold = config.VOLUME_THRESHOLD
         
         # Risk management
         self.take_profit_percent = config.TAKE_PROFIT_PERCENT / 100
@@ -66,84 +63,14 @@ class ScalpingStrategy:
         self.max_active_positions = config.MAX_ACTIVE_POSITIONS
         self.position_size = config.POSITION_SIZE
         
-        logger.info("Scalping strategy initialized.")
-    
+        logger.info(f"{self.__class__.__name__} strategy initialized.")
+
     def analyze_market(self):
         """
-        Analyze market data and generate trading signals.
-        
-        Returns:
-            dict: Analysis results
+        Base market analysis method. Should be implemented by specific strategies.
         """
-        try:
-            # Get market data
-            klines = self.binance_client.get_klines(
-                symbol=self.symbol,
-                timeframe=self.timeframe,
-                limit=100
-            )
-            
-            # Get order book
-            order_book = self.binance_client.get_order_book(
-                symbol=self.symbol,
-                limit=20
-            )
-            
-            # Calculate indicators
-            klines['rsi'] = calculate_rsi(klines, period=self.rsi_period)
-            klines['vwap'] = calculate_vwap(klines, period=self.vwap_period)
-            klines['atr'] = calculate_atr(klines, period=self.atr_period)
-            klines['volume_spike'] = detect_volume_spike(klines, threshold=self.volume_threshold)
-            
-            # Calculate order book imbalance
-            order_book_imbalance = calculate_order_book_imbalance(order_book)
-            
-            # Get latest data
-            latest = klines.iloc[-1]
-            
-            # Determine trend based on VWAP
-            trend = 'bullish' if latest['close'] > latest['vwap'] else 'bearish'
-            
-            # Check for entry conditions - removed volume spike requirement
-            long_signal = (
-                trend == 'bullish' and
-                latest['rsi'] < self.rsi_oversold
-                # Volume spike requirement removed
-            )
-            
-            short_signal = (
-                trend == 'bearish' and
-                latest['rsi'] > self.rsi_overbought
-                # Volume spike requirement removed
-            )
-            
-            # Prepare analysis results
-            analysis = {
-                'timestamp': datetime.now(),
-                'symbol': self.symbol,
-                'price': latest['close'],
-                'rsi': latest['rsi'],
-                'vwap': latest['vwap'],
-                'atr': latest['atr'],
-                'volume': latest['volume'],
-                'volume_spike': latest['volume_spike'],
-                'order_book_imbalance': order_book_imbalance,
-                'trend': trend,
-                'long_signal': long_signal,
-                'short_signal': short_signal
-            }
-            
-            logger.info(f"Market analysis completed for {self.symbol}.")
-            logger.info(f"Analysis results: {analysis}")
-            
-            return analysis
-        
-        except Exception as e:
-            logger.error(f"Error analyzing market: {e}")
-            if self.telegram_notifier:
-                self.telegram_notifier.notify_error(f"Error analyzing market: {e}")
-            raise
-    
+        raise NotImplementedError("Subclasses must implement analyze_market method")
+
     def execute_signals(self, analysis):
         """
         Execute trading signals based on market analysis.
@@ -174,502 +101,239 @@ class ScalpingStrategy:
             if self.telegram_notifier:
                 self.telegram_notifier.notify_error(f"Error executing signals: {e}")
             raise
-    
+
     def open_long_position(self, analysis):
         """
         Open a long position.
-        
-        Args:
-            analysis (dict): Market analysis results
-            
-        Returns:
-            dict: Position details
         """
-        try:
-            # Get account balance
-            balance = self.binance_client.get_account_balance()
-            usdt_balance = next((item for item in balance['info']['assets'] if item['asset'] == 'USDT'), None)
-            
-            if not usdt_balance:
-                logger.error("Could not find USDT balance.")
-                return {'action': 'none', 'reason': 'no_balance'}
-            
-            available_balance = float(usdt_balance['availableBalance'])
-            
-            # Calculate position size
-            position_amount = available_balance * self.position_size
-            
-            # Set leverage
-            self.binance_client.set_leverage(self.symbol, self.leverage)
-            
-            # Calculate entry price
-            entry_price = analysis['price']
-            
-            # Calculate stop loss price
-            if self.use_atr_for_sl:
-                stop_loss_price = calculate_atr_stop_loss(
-                    entry_price=entry_price,
-                    atr_value=analysis['atr'],
-                    atr_multiplier=self.atr_multiplier,
-                    position_type='long'
-                )
-            else:
-                stop_loss_price = calculate_stop_loss_price(
-                    entry_price=entry_price,
-                    stop_loss_percent=self.stop_loss_percent,
-                    position_type='long'
-                )
-            
-            # Calculate take profit price
-            take_profit_price = calculate_take_profit_price(
-                entry_price=entry_price,
-                take_profit_percent=self.take_profit_percent,
-                position_type='long'
-            )
-            
-            # Calculate position size in contracts
-            price_precision = 8  # Default precision
-            quantity_precision = 3  # Default precision
-            
-            # Get market info for precision
-            markets = self.binance_client.exchange.load_markets()
-            if self.symbol in markets:
-                market = markets[self.symbol]
-                price_precision = market['precision']['price']
-                quantity_precision = market['precision']['amount']
-            
-            # Calculate quantity
-            quantity = position_amount / entry_price
-            quantity = round(quantity, quantity_precision)
-            
-            # Open position with market order
-            order = self.binance_client.create_market_order(
-                symbol=self.symbol,
-                side='buy',
-                amount=quantity
-            )
-            
-            # Store position details
-            position_id = f"long_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-            position = {
-                'id': position_id,
-                'symbol': self.symbol,
-                'type': 'long',
-                'entry_price': entry_price,
-                'quantity': quantity,
-                'stop_loss': stop_loss_price,
-                'take_profit': take_profit_price,
-                'entry_time': datetime.now(),
-                'entry_order': order,
-                'status': 'open',
-                'trailing_stop_activated': False,
-                'trailing_stop_price': None
-            }
-            
-            self.active_positions[position_id] = position
-            
-            # Send notification
-            if self.telegram_notifier and config.NOTIFY_ON_TRADE_OPEN:
-                self.telegram_notifier.notify_trade_open(
-                    symbol=self.symbol,
-                    position_type='long',
-                    entry_price=entry_price,
-                    position_size=quantity,
-                    stop_loss=stop_loss_price,
-                    take_profit=take_profit_price
-                )
-            
-            logger.info(f"Opened long position for {self.symbol} at {entry_price}.")
-            
-            # Save trade history
-            save_trade_history({
-                'id': position_id,
-                'symbol': self.symbol,
-                'type': 'long',
-                'entry_price': float(entry_price),
-                'quantity': float(quantity),
-                'stop_loss': float(stop_loss_price),
-                'take_profit': float(take_profit_price),
-                'entry_time': datetime.now().isoformat(),
-                'status': 'open'
-            })
-            
-            return {
-                'action': 'open_long',
-                'position': position
-            }
-        
-        except Exception as e:
-            logger.error(f"Error opening long position: {e}")
-            if self.telegram_notifier:
-                self.telegram_notifier.notify_error(f"Error opening long position: {e}")
-            raise
-    
+        # ... existing code ...
+
     def open_short_position(self, analysis):
         """
         Open a short position.
-        
-        Args:
-            analysis (dict): Market analysis results
-            
-        Returns:
-            dict: Position details
         """
-        try:
-            # Get account balance
-            balance = self.binance_client.get_account_balance()
-            usdt_balance = next((item for item in balance['info']['assets'] if item['asset'] == 'USDT'), None)
-            
-            if not usdt_balance:
-                logger.error("Could not find USDT balance.")
-                return {'action': 'none', 'reason': 'no_balance'}
-            
-            available_balance = float(usdt_balance['availableBalance'])
-            
-            # Calculate position size
-            position_amount = available_balance * self.position_size
-            
-            # Set leverage
-            self.binance_client.set_leverage(self.symbol, self.leverage)
-            
-            # Calculate entry price
-            entry_price = analysis['price']
-            
-            # Calculate stop loss price
-            if self.use_atr_for_sl:
-                stop_loss_price = calculate_atr_stop_loss(
-                    entry_price=entry_price,
-                    atr_value=analysis['atr'],
-                    atr_multiplier=self.atr_multiplier,
-                    position_type='short'
-                )
-            else:
-                stop_loss_price = calculate_stop_loss_price(
-                    entry_price=entry_price,
-                    stop_loss_percent=self.stop_loss_percent,
-                    position_type='short'
-                )
-            
-            # Calculate take profit price
-            take_profit_price = calculate_take_profit_price(
-                entry_price=entry_price,
-                take_profit_percent=self.take_profit_percent,
-                position_type='short'
-            )
-            
-            # Calculate position size in contracts
-            price_precision = 8  # Default precision
-            quantity_precision = 3  # Default precision
-            
-            # Get market info for precision
-            markets = self.binance_client.exchange.load_markets()
-            if self.symbol in markets:
-                market = markets[self.symbol]
-                price_precision = market['precision']['price']
-                quantity_precision = market['precision']['amount']
-            
-            # Calculate quantity
-            quantity = position_amount / entry_price
-            quantity = round(quantity, quantity_precision)
-            
-            # Open position with market order
-            order = self.binance_client.create_market_order(
-                symbol=self.symbol,
-                side='sell',
-                amount=quantity
-            )
-            
-            # Store position details
-            position_id = f"short_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-            position = {
-                'id': position_id,
-                'symbol': self.symbol,
-                'type': 'short',
-                'entry_price': entry_price,
-                'quantity': quantity,
-                'stop_loss': stop_loss_price,
-                'take_profit': take_profit_price,
-                'entry_time': datetime.now(),
-                'entry_order': order,
-                'status': 'open',
-                'trailing_stop_activated': False,
-                'trailing_stop_price': None
-            }
-            
-            self.active_positions[position_id] = position
-            
-            # Send notification
-            if self.telegram_notifier and config.NOTIFY_ON_TRADE_OPEN:
-                self.telegram_notifier.notify_trade_open(
-                    symbol=self.symbol,
-                    position_type='short',
-                    entry_price=entry_price,
-                    position_size=quantity,
-                    stop_loss=stop_loss_price,
-                    take_profit=take_profit_price
-                )
-            
-            logger.info(f"Opened short position for {self.symbol} at {entry_price}.")
-            
-            # Save trade history
-            save_trade_history({
-                'id': position_id,
-                'symbol': self.symbol,
-                'type': 'short',
-                'entry_price': float(entry_price),
-                'quantity': float(quantity),
-                'stop_loss': float(stop_loss_price),
-                'take_profit': float(take_profit_price),
-                'entry_time': datetime.now().isoformat(),
-                'status': 'open'
-            })
-            
-            return {
-                'action': 'open_short',
-                'position': position
-            }
-        
-        except Exception as e:
-            logger.error(f"Error opening short position: {e}")
-            if self.telegram_notifier:
-                self.telegram_notifier.notify_error(f"Error opening short position: {e}")
-            raise
-    
+        # ... existing code ...
+
     def manage_positions(self):
         """
-        Manage open positions (check for take profit, stop loss, trailing stop).
-        
-        Returns:
-            list: List of actions taken
+        Manage open positions.
         """
-        if not self.active_positions:
-            return []
-        
-        actions = []
-        
-        try:
-            # Get current price
-            klines = self.binance_client.get_klines(
-                symbol=self.symbol,
-                timeframe='1m',
-                limit=1
-            )
-            current_price = klines.iloc[-1]['close']
-            
-            # Check each position
-            positions_to_remove = []
-            
-            for position_id, position in self.active_positions.items():
-                if position['status'] != 'open':
-                    continue
-                
-                position_type = position['type']
-                entry_price = position['entry_price']
-                stop_loss = position['stop_loss']
-                take_profit = position['take_profit']
-                
-                # Check if position should be closed
-                if position_type == 'long':
-                    # Check for stop loss
-                    if current_price <= stop_loss:
-                        self.close_position(position_id, 'stop_loss', current_price)
-                        positions_to_remove.append(position_id)
-                        actions.append({
-                            'action': 'close_long',
-                            'reason': 'stop_loss',
-                            'position_id': position_id,
-                            'price': current_price
-                        })
-                        continue
-                    
-                    # Check for take profit
-                    if current_price >= take_profit:
-                        self.close_position(position_id, 'take_profit', current_price)
-                        positions_to_remove.append(position_id)
-                        actions.append({
-                            'action': 'close_long',
-                            'reason': 'take_profit',
-                            'position_id': position_id,
-                            'price': current_price
-                        })
-                        continue
-                    
-                    # Check for trailing stop
-                    if self.use_trailing_stop:
-                        # Calculate profit percentage
-                        profit_percent = (current_price - entry_price) / entry_price
-                        
-                        # Check if trailing stop should be activated
-                        if profit_percent >= self.trailing_stop_activation:
-                            if not position['trailing_stop_activated']:
-                                # Activate trailing stop
-                                position['trailing_stop_activated'] = True
-                                position['trailing_stop_price'] = current_price * (1 - self.trailing_stop_callback)
-                                logger.info(f"Trailing stop activated for position {position_id} at {position['trailing_stop_price']}.")
-                            else:
-                                # Update trailing stop if price moves up
-                                new_trailing_stop = current_price * (1 - self.trailing_stop_callback)
-                                if new_trailing_stop > position['trailing_stop_price']:
-                                    position['trailing_stop_price'] = new_trailing_stop
-                                    logger.info(f"Trailing stop updated for position {position_id} to {position['trailing_stop_price']}.")
-                            
-                            # Check if price hits trailing stop
-                            if position['trailing_stop_activated'] and current_price <= position['trailing_stop_price']:
-                                self.close_position(position_id, 'trailing_stop', current_price)
-                                positions_to_remove.append(position_id)
-                                actions.append({
-                                    'action': 'close_long',
-                                    'reason': 'trailing_stop',
-                                    'position_id': position_id,
-                                    'price': current_price
-                                })
-                
-                elif position_type == 'short':
-                    # Check for stop loss
-                    if current_price >= stop_loss:
-                        self.close_position(position_id, 'stop_loss', current_price)
-                        positions_to_remove.append(position_id)
-                        actions.append({
-                            'action': 'close_short',
-                            'reason': 'stop_loss',
-                            'position_id': position_id,
-                            'price': current_price
-                        })
-                        continue
-                    
-                    # Check for take profit
-                    if current_price <= take_profit:
-                        self.close_position(position_id, 'take_profit', current_price)
-                        positions_to_remove.append(position_id)
-                        actions.append({
-                            'action': 'close_short',
-                            'reason': 'take_profit',
-                            'position_id': position_id,
-                            'price': current_price
-                        })
-                        continue
-                    
-                    # Check for trailing stop
-                    if self.use_trailing_stop:
-                        # Calculate profit percentage
-                        profit_percent = (entry_price - current_price) / entry_price
-                        
-                        # Check if trailing stop should be activated
-                        if profit_percent >= self.trailing_stop_activation:
-                            if not position['trailing_stop_activated']:
-                                # Activate trailing stop
-                                position['trailing_stop_activated'] = True
-                                position['trailing_stop_price'] = current_price * (1 + self.trailing_stop_callback)
-                                logger.info(f"Trailing stop activated for position {position_id} at {position['trailing_stop_price']}.")
-                            else:
-                                # Update trailing stop if price moves down
-                                new_trailing_stop = current_price * (1 + self.trailing_stop_callback)
-                                if new_trailing_stop < position['trailing_stop_price']:
-                                    position['trailing_stop_price'] = new_trailing_stop
-                                    logger.info(f"Trailing stop updated for position {position_id} to {position['trailing_stop_price']}.")
-                            
-                            # Check if price hits trailing stop
-                            if position['trailing_stop_activated'] and current_price >= position['trailing_stop_price']:
-                                self.close_position(position_id, 'trailing_stop', current_price)
-                                positions_to_remove.append(position_id)
-                                actions.append({
-                                    'action': 'close_short',
-                                    'reason': 'trailing_stop',
-                                    'position_id': position_id,
-                                    'price': current_price
-                                })
-            
-            # Remove closed positions
-            for position_id in positions_to_remove:
-                del self.active_positions[position_id]
-            
-            return actions
-        
-        except Exception as e:
-            logger.error(f"Error managing positions: {e}")
-            if self.telegram_notifier:
-                self.telegram_notifier.notify_error(f"Error managing positions: {e}")
-            return []
-    
+        # ... existing code ...
+
     def close_position(self, position_id, reason, exit_price):
         """
         Close a position.
+        """
+        # ... existing code ...
+
+
+class ScalpingStrategy(Strategy):
+    """
+    Scalping strategy for short-term trades based on RSI and VWAP.
+    """
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         
-        Args:
-            position_id (str): Position ID
-            reason (str): Reason for closing position
-            exit_price (float): Exit price
-            
-        Returns:
-            bool: True if position was closed successfully, False otherwise
+        # Strategy parameters
+        self.rsi_period = config.RSI_PERIOD
+        self.rsi_overbought = config.RSI_OVERBOUGHT
+        self.rsi_oversold = config.RSI_OVERSOLD
+        self.vwap_period = config.VWAP_PERIOD
+        self.atr_period = config.ATR_PERIOD
+        self.volume_threshold = config.VOLUME_THRESHOLD
+    
+    def analyze_market(self):
+        """
+        Analyze market data for scalping opportunities.
         """
         try:
-            position = self.active_positions.get(position_id)
-            
-            if not position:
-                logger.warning(f"Position {position_id} not found.")
-                return False
-            
-            # Close position with market order
-            side = 'sell' if position['type'] == 'long' else 'buy'
-            
-            order = self.binance_client.create_market_order(
+            # Get market data
+            klines = self.binance_client.get_klines(
                 symbol=self.symbol,
-                side=side,
-                amount=position['quantity']
+                timeframe=self.timeframe,
+                limit=100
             )
             
-            # Calculate profit/loss
-            if position['type'] == 'long':
-                profit_loss = (exit_price - position['entry_price']) * position['quantity']
-                profit_loss_percent = (exit_price - position['entry_price']) / position['entry_price'] * 100
-            else:  # short
-                profit_loss = (position['entry_price'] - exit_price) * position['quantity']
-                profit_loss_percent = (position['entry_price'] - exit_price) / position['entry_price'] * 100
+            # Calculate indicators
+            klines['rsi'] = calculate_rsi(klines, period=self.rsi_period)
+            klines['vwap'] = calculate_vwap(klines, period=self.vwap_period)
+            klines['atr'] = calculate_atr(klines, period=self.atr_period)
             
-            # Update position status
-            position['status'] = 'closed'
-            position['exit_price'] = exit_price
-            position['exit_time'] = datetime.now()
-            position['exit_order'] = order
-            position['profit_loss'] = profit_loss
-            position['profit_loss_percent'] = profit_loss_percent
-            position['close_reason'] = reason
+            # Get latest data
+            latest = klines.iloc[-1]
             
-            # Send notification
-            if self.telegram_notifier and config.NOTIFY_ON_TRADE_CLOSE:
-                self.telegram_notifier.notify_trade_close(
-                    symbol=self.symbol,
-                    position_type=position['type'],
-                    entry_price=position['entry_price'],
-                    exit_price=exit_price,
-                    profit_loss=profit_loss,
-                    profit_loss_percent=profit_loss_percent
-                )
+            # Determine trend based on VWAP
+            trend = 'bullish' if latest['close'] > latest['vwap'] else 'bearish'
             
-            logger.info(f"Closed {position['type']} position for {self.symbol} at {exit_price} ({reason}).")
-            logger.info(f"Profit/Loss: {profit_loss:.4f} ({profit_loss_percent:.2f}%).")
+            # Generate signals
+            long_signal = (
+                trend == 'bullish' and
+                latest['rsi'] < self.rsi_oversold
+            )
             
-            # Save trade history
-            save_trade_history({
-                'id': position_id,
+            short_signal = (
+                trend == 'bearish' and
+                latest['rsi'] > self.rsi_overbought
+            )
+            
+            return {
+                'timestamp': datetime.now(),
                 'symbol': self.symbol,
-                'type': position['type'],
-                'entry_price': float(position['entry_price']),
-                'exit_price': float(exit_price),
-                'quantity': float(position['quantity']),
-                'entry_time': position['entry_time'].isoformat(),
-                'exit_time': datetime.now().isoformat(),
-                'profit_loss': float(profit_loss),
-                'profit_loss_percent': float(profit_loss_percent),
-                'close_reason': reason,
-                'status': 'closed'
-            })
+                'price': latest['close'],
+                'rsi': latest['rsi'],
+                'vwap': latest['vwap'],
+                'atr': latest['atr'],
+                'trend': trend,
+                'long_signal': long_signal,
+                'short_signal': short_signal
+            }
             
-            return True
-        
         except Exception as e:
-            logger.error(f"Error closing position: {e}")
+            logger.error(f"Error analyzing market: {e}")
             if self.telegram_notifier:
-                self.telegram_notifier.notify_error(f"Error closing position: {e}")
-            return False 
+                self.telegram_notifier.notify_error(f"Error analyzing market: {e}")
+            raise
+
+
+class SwingStrategy(Strategy):
+    """
+    Swing trading strategy based on MACD and Bollinger Bands.
+    """
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        # Strategy parameters
+        self.macd_fast = config.MACD_FAST_PERIOD
+        self.macd_slow = config.MACD_SLOW_PERIOD
+        self.macd_signal = config.MACD_SIGNAL_PERIOD
+        self.bb_period = config.BB_PERIOD
+        self.bb_std = config.BB_STD
+    
+    def analyze_market(self):
+        """
+        Analyze market data for swing trading opportunities.
+        """
+        try:
+            # Get market data
+            klines = self.binance_client.get_klines(
+                symbol=self.symbol,
+                timeframe=self.timeframe,
+                limit=100
+            )
+            
+            # Calculate indicators
+            macd_data = calculate_macd(
+                klines,
+                fast_period=self.macd_fast,
+                slow_period=self.macd_slow,
+                signal_period=self.macd_signal
+            )
+            bb_data = calculate_bollinger_bands(
+                klines,
+                period=self.bb_period,
+                std=self.bb_std
+            )
+            
+            # Get latest data
+            latest = klines.iloc[-1]
+            latest_macd = macd_data.iloc[-1]
+            latest_bb = bb_data.iloc[-1]
+            
+            # Generate signals
+            long_signal = (
+                latest_macd['macd'] > latest_macd['signal'] and  # MACD crossover
+                latest['close'] < latest_bb['lower_band']  # Price below lower BB
+            )
+            
+            short_signal = (
+                latest_macd['macd'] < latest_macd['signal'] and  # MACD crossunder
+                latest['close'] > latest_bb['upper_band']  # Price above upper BB
+            )
+            
+            return {
+                'timestamp': datetime.now(),
+                'symbol': self.symbol,
+                'price': latest['close'],
+                'macd': latest_macd['macd'],
+                'macd_signal': latest_macd['signal'],
+                'bb_upper': latest_bb['upper_band'],
+                'bb_lower': latest_bb['lower_band'],
+                'long_signal': long_signal,
+                'short_signal': short_signal
+            }
+            
+        except Exception as e:
+            logger.error(f"Error analyzing market: {e}")
+            if self.telegram_notifier:
+                self.telegram_notifier.notify_error(f"Error analyzing market: {e}")
+            raise
+
+
+class BreakoutStrategy(Strategy):
+    """
+    Breakout trading strategy based on ATR and Volume.
+    """
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        # Strategy parameters
+        self.atr_period = config.ATR_PERIOD
+        self.volume_threshold = config.VOLUME_THRESHOLD
+        self.breakout_period = config.BREAKOUT_PERIOD
+    
+    def analyze_market(self):
+        """
+        Analyze market data for breakout opportunities.
+        """
+        try:
+            # Get market data
+            klines = self.binance_client.get_klines(
+                symbol=self.symbol,
+                timeframe=self.timeframe,
+                limit=self.breakout_period + 20  # Extra candles for indicators
+            )
+            
+            # Calculate indicators
+            klines['atr'] = calculate_atr(klines, period=self.atr_period)
+            klines['volume_spike'] = detect_volume_spike(klines, threshold=self.volume_threshold)
+            
+            # Calculate recent high/low
+            recent_high = klines['high'].rolling(window=self.breakout_period).max()
+            recent_low = klines['low'].rolling(window=self.breakout_period).min()
+            
+            # Get latest data
+            latest = klines.iloc[-1]
+            
+            # Generate signals
+            long_signal = (
+                latest['close'] > recent_high.iloc[-2] and  # Break above recent high
+                latest['volume_spike'] and  # Confirmed by volume
+                latest['close'] > latest['open']  # Green candle
+            )
+            
+            short_signal = (
+                latest['close'] < recent_low.iloc[-2] and  # Break below recent low
+                latest['volume_spike'] and  # Confirmed by volume
+                latest['close'] < latest['open']  # Red candle
+            )
+            
+            return {
+                'timestamp': datetime.now(),
+                'symbol': self.symbol,
+                'price': latest['close'],
+                'atr': latest['atr'],
+                'recent_high': recent_high.iloc[-1],
+                'recent_low': recent_low.iloc[-1],
+                'volume_spike': latest['volume_spike'],
+                'long_signal': long_signal,
+                'short_signal': short_signal
+            }
+            
+        except Exception as e:
+            logger.error(f"Error analyzing market: {e}")
+            if self.telegram_notifier:
+                self.telegram_notifier.notify_error(f"Error analyzing market: {e}")
+            raise 

@@ -14,7 +14,7 @@ import config
 from utils import setup_logger
 from binance_client import BinanceClient
 from telegram_notifier import TelegramNotifier
-from strategy import ScalpingStrategy
+from strategy import ScalpingStrategy, SwingStrategy, BreakoutStrategy
 from backtest import Backtester
 
 # Load environment variables
@@ -24,17 +24,51 @@ load_dotenv()
 logger = setup_logger(config.LOG_LEVEL)
 
 
-def run_bot(test_mode=False, api_key=None, api_secret=None, symbol=None, leverage=None, timeframe=None):
+def get_strategy_class(strategy_name):
+    """
+    Get the strategy class based on the strategy name.
+    
+    Args:
+        strategy_name (str): Name of the strategy
+        
+    Returns:
+        class: Strategy class
+    """
+    strategy_map = {
+        'scalping': (ScalpingStrategy, config.SCALPING_TIMEFRAME),
+        'swing': (SwingStrategy, config.SWING_TIMEFRAME),
+        'breakout': (BreakoutStrategy, config.BREAKOUT_TIMEFRAME)
+    }
+    
+    if strategy_name not in strategy_map:
+        raise ValueError(f"Invalid strategy: {strategy_name}. Available strategies: {', '.join(strategy_map.keys())}")
+    
+    return strategy_map[strategy_name]
+
+
+def run_bot(test_mode=False, api_key=None, api_secret=None, symbol=None, leverage=None, timeframe=None, strategy_name='scalping'):
     """
     Run the trading bot.
     
     Args:
         test_mode (bool): Run in test mode (no real trades)
+        api_key (str): Binance API key
+        api_secret (str): Binance API secret
+        symbol (str): Trading symbol
+        leverage (int): Trading leverage
+        timeframe (str): Trading timeframe
+        strategy_name (str): Name of the strategy to use
     """
     telegram_notifier = None  # Initialize to None to avoid UnboundLocalError
     
     try:
         logger.info("Starting AI Trading Bot...")
+        
+        # Get strategy class and default timeframe
+        strategy_class, default_timeframe = get_strategy_class(strategy_name.lower())
+        
+        # Use provided timeframe or default for the strategy
+        timeframe = timeframe or default_timeframe
         
         # Initialize Binance client
         try:
@@ -60,7 +94,7 @@ def run_bot(test_mode=False, api_key=None, api_secret=None, symbol=None, leverag
             telegram_notifier = None
         
         # Initialize strategy
-        strategy = ScalpingStrategy(binance_client, telegram_notifier, symbol, timeframe, leverage)
+        strategy = strategy_class(binance_client, telegram_notifier, symbol, timeframe, leverage)
         
         # Set leverage
         try:
@@ -73,19 +107,20 @@ def run_bot(test_mode=False, api_key=None, api_secret=None, symbol=None, leverag
                 return
             else:
                 logger.warning(f"Continuing with default leverage. Some features may be limited.")
-                # Continue without setting leverage
         
         # Send startup notification
         if telegram_notifier:
             try:
                 telegram_notifier.notify_system_status(
                     f"AI Trading Bot started for {symbol} ({timeframe}).\n"
+                    f"Strategy: {strategy_name.upper()}\n"
                     f"Mode: {'TEST' if test_mode else 'LIVE'}"
                 )
             except Exception as e:
                 logger.error(f"Error sending Telegram notification: {e}")
         
         logger.info(f"Bot initialized for {symbol} ({timeframe}).")
+        logger.info(f"Strategy: {strategy_name.upper()}")
         logger.info(f"Mode: {'TEST' if test_mode else 'LIVE'}")
         
         # Main loop
@@ -153,7 +188,7 @@ def run_bot(test_mode=False, api_key=None, api_secret=None, symbol=None, leverag
                 logger.error(f"Error sending Telegram notification: {notify_error}")
 
 
-def run_backtest(symbol=None, timeframe=None, start_date=None, end_date=None, initial_balance=10000):
+def run_backtest(symbol=None, timeframe=None, start_date=None, end_date=None, initial_balance=10000, strategy_name='scalping'):
     """
     Run backtest.
     
@@ -163,16 +198,25 @@ def run_backtest(symbol=None, timeframe=None, start_date=None, end_date=None, in
         start_date (str): Start date (YYYY-MM-DD)
         end_date (str): End date (YYYY-MM-DD)
         initial_balance (float): Initial balance
+        strategy_name (str): Name of the strategy to use
     """
     try:
         logger.info("Starting backtest...")
+        logger.info(f"Strategy: {strategy_name.upper()}")
+        
+        # Get strategy class and default timeframe
+        strategy_class, default_timeframe = get_strategy_class(strategy_name.lower())
+        
+        # Use provided timeframe or default for the strategy
+        timeframe = timeframe or default_timeframe
         
         # Initialize backtester
         backtester = Backtester(
             symbol=symbol,
             timeframe=timeframe,
             start_date=start_date,
-            end_date=end_date
+            end_date=end_date,
+            strategy_class=strategy_class
         )
         
         # Run backtest
@@ -201,6 +245,13 @@ if __name__ == "__main__":
     parser.add_argument("--end-date", type=str, help="End date for backtest (YYYY-MM-DD)")
     parser.add_argument("--initial-balance", type=float, default=10000, help="Initial balance for backtest")
     parser.add_argument("--leverage", type=int, help="Leverage")
+    parser.add_argument(
+        "--strategy",
+        type=str,
+        choices=['scalping', 'swing', 'breakout'],
+        default='scalping',
+        help="Trading strategy to use"
+    )
 
     args = parser.parse_args()
     if args.backtest:
@@ -210,7 +261,8 @@ if __name__ == "__main__":
             timeframe=args.timeframe,
             start_date=args.start_date,
             end_date=args.end_date,
-            initial_balance=args.initial_balance
+            initial_balance=args.initial_balance,
+            strategy_name=args.strategy
         )
     else:
         # Run bot
@@ -220,5 +272,6 @@ if __name__ == "__main__":
             api_secret=os.getenv('BINANCE_API_SECRET'),
             symbol=args.symbol,
             leverage=args.leverage,
-            timeframe=args.timeframe
+            timeframe=args.timeframe,
+            strategy_name=args.strategy
         )
