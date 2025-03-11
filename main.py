@@ -60,7 +60,7 @@ def run_bot(test_mode=False, api_key=None, api_secret=None, symbol=None, leverag
             telegram_notifier = None
         
         # Initialize strategy
-        strategy = ScalpingStrategy(binance_client, telegram_notifier)
+        strategy = ScalpingStrategy(binance_client, telegram_notifier, symbol, timeframe, leverage)
         
         # Set leverage
         try:
@@ -201,6 +201,7 @@ if __name__ == "__main__":
     parser.add_argument("--end-date", type=str, help="End date for backtest (YYYY-MM-DD)")
     parser.add_argument("--initial-balance", type=float, default=10000, help="Initial balance for backtest")
     parser.add_argument("--leverage", type=int, help="Leverage")
+
     args = parser.parse_args()
     if args.backtest:
         # Run backtest

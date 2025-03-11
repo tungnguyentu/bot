@@ -30,7 +30,7 @@ class ScalpingStrategy:
     Scalping strategy for the trading bot.
     """
     
-    def __init__(self, binance_client, telegram_notifier=None):
+    def __init__(self, binance_client, telegram_notifier=None, symbol=None, timeframe=None, leverage=None):
         """
         Initialize the scalping strategy.
         
@@ -40,8 +40,9 @@ class ScalpingStrategy:
         """
         self.binance_client = binance_client
         self.telegram_notifier = telegram_notifier
-        self.symbol = config.SYMBOL
-        self.timeframe = config.TIMEFRAME
+        self.symbol = symbol
+        self.timeframe = timeframe
+        self.leverage = leverage
         self.active_positions = {}
         
         # Strategy parameters
@@ -199,7 +200,7 @@ class ScalpingStrategy:
             position_amount = available_balance * self.position_size
             
             # Set leverage
-            self.binance_client.set_leverage(self.symbol, config.LEVERAGE)
+            self.binance_client.set_leverage(self.symbol, self.leverage)
             
             # Calculate entry price
             entry_price = analysis['price']
@@ -329,7 +330,7 @@ class ScalpingStrategy:
             position_amount = available_balance * self.position_size
             
             # Set leverage
-            self.binance_client.set_leverage(self.symbol, config.LEVERAGE)
+            self.binance_client.set_leverage(self.symbol, self.leverage)
             
             # Calculate entry price
             entry_price = analysis['price']
