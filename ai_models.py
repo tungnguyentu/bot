@@ -116,9 +116,19 @@ class LSTMModel:
             if self.model is None:
                 self.build_model(input_shape=(X_train.shape[1], X_train.shape[2]))
             
+            # Create models directory if it doesn't exist
+            os.makedirs('models', exist_ok=True)
+            
+            # Model paths
+            model_path_keras = f"models/lstm_model_{self.symbol}_{self.timeframe}.keras"
+            
             # Callbacks
             early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
-            model_checkpoint = ModelCheckpoint(f"models/lstm_model_{self.symbol}_{self.timeframe}.h5", save_best_only=True)
+            model_checkpoint = ModelCheckpoint(
+                model_path_keras, 
+                save_best_only=True,
+                save_format='keras'  # Use the newer Keras format
+            )
             
             # Train model
             history = self.model.fit(
@@ -131,6 +141,7 @@ class LSTMModel:
             )
             
             logger.info(f"LSTM model trained for {len(history.history['loss'])} epochs.")
+            logger.info(f"Best model saved to {model_path_keras} in Keras format.")
             
             return self.model
         
@@ -233,12 +244,11 @@ class XGBoostModel:
 
         Args:
             symbol (str): Trading symbol
-            timeframe (str): Timeframe
+            timeframe (str): Trading timeframe
         """
-        self.symbol = symbol or config.SYMBOL
-        self.timeframe = timeframe or config.TIMEFRAME
+        self.symbol = symbol
+        self.timeframe = timeframe
         self.model = None
-        self.model_path = f"models/xgboost_{self.symbol}_{self.timeframe}.pkl"
         
         logger.info(f"XGBoost model initialized for {self.symbol} ({self.timeframe}).")
 
@@ -284,8 +294,8 @@ class XGBoostModel:
         Args:
             X_train (np.array): Training features
             y_train (np.array): Training target
-            X_val (np.array): Validation features
-            y_val (np.array): Validation target
+            X_val (np.array, optional): Validation features
+            y_val (np.array, optional): Validation target
 
         Returns:
             xgboost.XGBClassifier: Trained XGBoost model
@@ -295,23 +305,24 @@ class XGBoostModel:
             if self.model is None:
                 self.build_model()
             
-            # Prepare evaluation set
-            eval_set = [(X_train, y_train)]
-            if X_val is not None and y_val is not None:
-                eval_set.append((X_val, y_val))
-            
             # Train model
-            self.model.fit(
-                X_train, y_train,
-                eval_set=eval_set,
-                early_stopping_rounds=10,
-                verbose=True
-            )
-            
-            logger.info(f"XGBoost model trained.")
+            if X_val is not None and y_val is not None:
+                # Train with validation data
+                eval_set = [(X_train, y_train), (X_val, y_val)]
+                self.model.fit(
+                    X_train, y_train,
+                    eval_set=eval_set,
+                    early_stopping_rounds=10,
+                    verbose=True
+                )
+            else:
+                # Train without validation data
+                self.model.fit(X_train, y_train)
             
             # Save model
             self.save_model()
+            
+            logger.info(f"XGBoost model trained successfully.")
             
             return self.model
         
@@ -333,6 +344,10 @@ class XGBoostModel:
             # Load model if not already loaded
             if self.model is None:
                 self.load_model()
+                
+                if self.model is None:
+                    logger.error("No XGBoost model available for prediction.")
+                    return np.zeros(len(X))
             
             # Make predictions
             predictions = self.model.predict(X)
@@ -357,6 +372,10 @@ class XGBoostModel:
             # Load model if not already loaded
             if self.model is None:
                 self.load_model()
+                
+                if self.model is None:
+                    logger.error("No XGBoost model available for prediction.")
+                    return np.zeros((len(X), 2))
             
             # Make probability predictions
             probabilities = self.model.predict_proba(X)
@@ -369,44 +388,55 @@ class XGBoostModel:
 
     def save_model(self):
         """
-        Save the XGBoost model.
+        Save the model to disk.
+        
+        Returns:
+            bool: True if successful, False otherwise
         """
         try:
+            if self.model is None:
+                logger.warning("No XGBoost model to save.")
+                return False
+            
             # Create models directory if it doesn't exist
             os.makedirs('models', exist_ok=True)
             
             # Save model
-            joblib.dump(self.model, self.model_path)
+            model_path = f'models/xgboost_model_{self.symbol}_{self.timeframe}.pkl'
+            joblib.dump(self.model, model_path)
             
-            logger.info(f"XGBoost model saved to {self.model_path}.")
+            logger.info(f"XGBoost model saved to {model_path}")
+            return True
         
         except Exception as e:
             logger.error(f"Error saving XGBoost model: {e}")
-            raise
+            return False
 
     def load_model(self):
         """
-        Load the XGBoost model.
-
+        Load the model from disk.
+        
         Returns:
-            xgboost.XGBClassifier: Loaded XGBoost model
+            bool: True if successful, False otherwise
         """
         try:
+            # Model path
+            model_path = f'models/xgboost_model_{self.symbol}_{self.timeframe}.pkl'
+            
             # Check if model file exists
-            if not os.path.exists(self.model_path):
-                logger.warning(f"XGBoost model file not found at {self.model_path}.")
-                return None
+            if not os.path.exists(model_path):
+                logger.warning(f"XGBoost model file not found at {model_path}.")
+                return False
             
             # Load model
-            self.model = joblib.load(self.model_path)
+            self.model = joblib.load(model_path)
             
-            logger.info(f"XGBoost model loaded from {self.model_path}.")
-            
-            return self.model
+            logger.info(f"XGBoost model loaded from {model_path}")
+            return True
         
         except Exception as e:
             logger.error(f"Error loading XGBoost model: {e}")
-            raise
+            return False
 
 
 class RandomForestModel:
@@ -420,12 +450,11 @@ class RandomForestModel:
 
         Args:
             symbol (str): Trading symbol
-            timeframe (str): Timeframe
+            timeframe (str): Trading timeframe
         """
-        self.symbol = symbol or config.SYMBOL
-        self.timeframe = timeframe or config.TIMEFRAME
+        self.symbol = symbol
+        self.timeframe = timeframe
         self.model = None
-        self.model_path = f"models/random_forest_{self.symbol}_{self.timeframe}.pkl"
         
         logger.info(f"Random Forest model initialized for {self.symbol} ({self.timeframe}).")
 
@@ -445,9 +474,10 @@ class RandomForestModel:
                 params = {
                     'n_estimators': 100,
                     'max_depth': 10,
-                    'min_samples_split': 2,
-                    'min_samples_leaf': 1,
-                    'random_state': 42
+                    'min_samples_split': 5,
+                    'min_samples_leaf': 2,
+                    'random_state': 42,
+                    'n_jobs': -1
                 }
             
             # Build model
@@ -480,10 +510,10 @@ class RandomForestModel:
             # Train model
             self.model.fit(X_train, y_train)
             
-            logger.info(f"Random Forest model trained.")
-            
             # Save model
             self.save_model()
+            
+            logger.info(f"Random Forest model trained successfully.")
             
             return self.model
         
@@ -505,6 +535,10 @@ class RandomForestModel:
             # Load model if not already loaded
             if self.model is None:
                 self.load_model()
+                
+                if self.model is None:
+                    logger.error("No Random Forest model available for prediction.")
+                    return np.zeros(len(X))
             
             # Make predictions
             predictions = self.model.predict(X)
@@ -529,6 +563,10 @@ class RandomForestModel:
             # Load model if not already loaded
             if self.model is None:
                 self.load_model()
+                
+                if self.model is None:
+                    logger.error("No Random Forest model available for prediction.")
+                    return np.zeros((len(X), 2))
             
             # Make probability predictions
             probabilities = self.model.predict_proba(X)
@@ -541,44 +579,55 @@ class RandomForestModel:
 
     def save_model(self):
         """
-        Save the Random Forest model.
+        Save the model to disk.
+        
+        Returns:
+            bool: True if successful, False otherwise
         """
         try:
+            if self.model is None:
+                logger.warning("No Random Forest model to save.")
+                return False
+            
             # Create models directory if it doesn't exist
             os.makedirs('models', exist_ok=True)
             
             # Save model
-            joblib.dump(self.model, self.model_path)
+            model_path = f'models/random_forest_model_{self.symbol}_{self.timeframe}.pkl'
+            joblib.dump(self.model, model_path)
             
-            logger.info(f"Random Forest model saved to {self.model_path}.")
+            logger.info(f"Random Forest model saved to {model_path}")
+            return True
         
         except Exception as e:
             logger.error(f"Error saving Random Forest model: {e}")
-            raise
+            return False
 
     def load_model(self):
         """
-        Load the Random Forest model.
-
+        Load the model from disk.
+        
         Returns:
-            sklearn.ensemble.RandomForestClassifier: Loaded Random Forest model
+            bool: True if successful, False otherwise
         """
         try:
+            # Model path
+            model_path = f'models/random_forest_model_{self.symbol}_{self.timeframe}.pkl'
+            
             # Check if model file exists
-            if not os.path.exists(self.model_path):
-                logger.warning(f"Random Forest model file not found at {self.model_path}.")
-                return None
+            if not os.path.exists(model_path):
+                logger.warning(f"Random Forest model file not found at {model_path}.")
+                return False
             
             # Load model
-            self.model = joblib.load(self.model_path)
+            self.model = joblib.load(model_path)
             
-            logger.info(f"Random Forest model loaded from {self.model_path}.")
-            
-            return self.model
+            logger.info(f"Random Forest model loaded from {model_path}")
+            return True
         
         except Exception as e:
             logger.error(f"Error loading Random Forest model: {e}")
-            raise
+            return False
 
 
 class TradingEnvironment(gym.Env):
@@ -740,12 +789,11 @@ class RLModel:
 
         Args:
             symbol (str): Trading symbol
-            timeframe (str): Timeframe
+            timeframe (str): Trading timeframe
         """
-        self.symbol = symbol or config.SYMBOL
-        self.timeframe = timeframe or config.TIMEFRAME
+        self.symbol = symbol
+        self.timeframe = timeframe
         self.model = None
-        self.model_path = f"models/rl_{self.symbol}_{self.timeframe}"
         
         logger.info(f"RL model initialized for {self.symbol} ({self.timeframe}).")
 
@@ -760,15 +808,32 @@ class RLModel:
             stable_baselines3.PPO: RL model
         """
         try:
+            # Create vectorized environment
+            vec_env = DummyVecEnv([lambda: env])
+            
             # Build model
             self.model = PPO(
-                'MlpPolicy',
-                env,
-                verbose=1,
-                tensorboard_log=f"./logs/{self.symbol}_{self.timeframe}/"
+                policy='MlpPolicy',
+                env=vec_env,
+                learning_rate=0.0003,
+                n_steps=2048,
+                batch_size=64,
+                n_epochs=10,
+                gamma=0.99,
+                gae_lambda=0.95,
+                clip_range=0.2,
+                clip_range_vf=None,
+                ent_coef=0.01,
+                vf_coef=0.5,
+                max_grad_norm=0.5,
+                use_sde=False,
+                sde_sample_freq=-1,
+                target_kl=None,
+                tensorboard_log=None,
+                verbose=1
             )
             
-            logger.info(f"RL model built.")
+            logger.info(f"RL model built for {self.symbol} ({self.timeframe}).")
             
             return self.model
         
@@ -782,7 +847,7 @@ class RLModel:
 
         Args:
             env (gym.Env): Trading environment
-            total_timesteps (int): Total timesteps for training
+            total_timesteps (int): Total timesteps to train for
 
         Returns:
             stable_baselines3.PPO: Trained RL model
@@ -795,10 +860,10 @@ class RLModel:
             # Train model
             self.model.learn(total_timesteps=total_timesteps)
             
-            logger.info(f"RL model trained for {total_timesteps} timesteps.")
-            
             # Save model
             self.save_model()
+            
+            logger.info(f"RL model trained for {total_timesteps} timesteps.")
             
             return self.model
         
@@ -811,18 +876,22 @@ class RLModel:
         Make predictions with the RL model.
 
         Args:
-            observation (np.array): Observation
+            observation (np.array): Environment observation
 
         Returns:
-            tuple: (action, _)
+            int: Action to take
         """
         try:
             # Load model if not already loaded
             if self.model is None:
                 self.load_model()
+                
+                if self.model is None:
+                    logger.error("No RL model available for prediction.")
+                    return 0  # Default action
             
-            # Make predictions
-            action, _ = self.model.predict(observation)
+            # Make prediction
+            action, _ = self.model.predict(observation, deterministic=True)
             
             return action
         
@@ -832,44 +901,55 @@ class RLModel:
 
     def save_model(self):
         """
-        Save the RL model.
+        Save the model to disk.
+        
+        Returns:
+            bool: True if successful, False otherwise
         """
         try:
+            if self.model is None:
+                logger.warning("No RL model to save.")
+                return False
+            
             # Create models directory if it doesn't exist
             os.makedirs('models', exist_ok=True)
             
             # Save model
-            self.model.save(self.model_path)
+            model_path = f'models/rl_model_{self.symbol}_{self.timeframe}'
+            self.model.save(model_path)
             
-            logger.info(f"RL model saved to {self.model_path}.")
+            logger.info(f"RL model saved to {model_path}")
+            return True
         
         except Exception as e:
             logger.error(f"Error saving RL model: {e}")
-            raise
+            return False
 
     def load_model(self):
         """
-        Load the RL model.
-
+        Load the model from disk.
+        
         Returns:
-            stable_baselines3.PPO: Loaded RL model
+            bool: True if successful, False otherwise
         """
         try:
+            # Model path
+            model_path = f'models/rl_model_{self.symbol}_{self.timeframe}'
+            
             # Check if model file exists
-            if not os.path.exists(f"{self.model_path}.zip"):
-                logger.warning(f"RL model file not found at {self.model_path}.zip.")
-                return None
+            if not os.path.exists(model_path + '.zip'):
+                logger.warning(f"RL model file not found at {model_path}.zip.")
+                return False
             
             # Load model
-            self.model = PPO.load(self.model_path)
+            self.model = PPO.load(model_path)
             
-            logger.info(f"RL model loaded from {self.model_path}.")
-            
-            return self.model
+            logger.info(f"RL model loaded from {model_path}")
+            return True
         
         except Exception as e:
             logger.error(f"Error loading RL model: {e}")
-            raise
+            return False
 
 
 class EnsembleModel:
