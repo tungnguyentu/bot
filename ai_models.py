@@ -127,7 +127,6 @@ class LSTMModel:
             model_checkpoint = ModelCheckpoint(
                 model_path_keras, 
                 save_best_only=True,
-                save_format='keras'  # Use the newer Keras format
             )
             
             # Train model
@@ -190,7 +189,9 @@ class LSTMModel:
             
             # Save model in the newer Keras format
             model_path = f'models/lstm_model_{self.symbol}_{self.timeframe}.keras'
-            self.model.save(model_path, save_format='keras')
+            
+            # Use the newer save method without options parameter
+            self.model.save(model_path)
             
             logger.info(f"LSTM model saved to {model_path}")
             return True
@@ -215,18 +216,26 @@ class LSTMModel:
             
             # Try to load the model from either format
             if os.path.exists(model_path_keras):
-                self.model = tf.keras.models.load_model(model_path_keras)
-                logger.info(f"LSTM model loaded from {model_path_keras}")
-                return True
-            elif os.path.exists(model_path_h5):
-                self.model = tf.keras.models.load_model(model_path_h5)
-                logger.info(f"LSTM model loaded from {model_path_h5}")
-                # Save in the newer format for future use
-                self.save_model()
-                return True
-            else:
-                logger.warning(f"No LSTM model found for {self.symbol} ({self.timeframe}).")
-                return False
+                try:
+                    self.model = tf.keras.models.load_model(model_path_keras)
+                    logger.info(f"LSTM model loaded from {model_path_keras}")
+                    return True
+                except Exception as e:
+                    logger.error(f"Error loading model from {model_path_keras}: {e}")
+                    # If there's an error with the Keras format, try the H5 format as fallback
+            
+            if os.path.exists(model_path_h5):
+                try:
+                    self.model = tf.keras.models.load_model(model_path_h5)
+                    logger.info(f"LSTM model loaded from {model_path_h5}")
+                    # Save in the newer format for future use
+                    self.save_model()
+                    return True
+                except Exception as e:
+                    logger.error(f"Error loading model from {model_path_h5}: {e}")
+            
+            logger.warning(f"No LSTM model found for {self.symbol} ({self.timeframe}).")
+            return False
         
         except Exception as e:
             logger.error(f"Error loading LSTM model: {e}")
