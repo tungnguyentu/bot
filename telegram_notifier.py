@@ -65,14 +65,30 @@ class TelegramNotifier:
             return False
 
         try:
+            # Clean message to avoid markdown formatting issues
+            # Replace characters that might cause issues with Telegram's markdown
+            clean_message = message
+            for char in ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']:
+                clean_message = clean_message.replace(char, f"\\{char}")
+            
             self.bot.send_message(
-                chat_id=self.chat_id, text=message, parse_mode="Markdown"
+                chat_id=self.chat_id, text=clean_message, parse_mode=None
             )
             logger.info("Telegram message sent successfully.")
             return True
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")
-            return False
+            
+            # Try again without markdown parsing
+            try:
+                self.bot.send_message(
+                    chat_id=self.chat_id, text=message, parse_mode=None
+                )
+                logger.info("Telegram message sent successfully without markdown parsing.")
+                return True
+            except Exception as e2:
+                logger.error(f"Failed to send Telegram message without markdown parsing: {e2}")
+                return False
 
     def notify_trade_open(
         self, symbol, position_type, entry_price, position_size, stop_loss, take_profit
@@ -89,14 +105,14 @@ class TelegramNotifier:
             take_profit (float): Take profit price
         """
         message = (
-            f"🚀 *TRADE OPENED*\n\n"
-            f"*Symbol:* {symbol}\n"
-            f"*Position:* {'LONG 📈' if position_type == 'long' else 'SHORT 📉'}\n"
-            f"*Entry Price:* {entry_price:.2f}\n"
-            f"*Position Size:* {position_size:.4f}\n"
-            f"*Stop Loss:* {stop_loss:.2f}\n"
-            f"*Take Profit:* {take_profit:.2f}\n"
-            f"*Time:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            f"🚀 TRADE OPENED\n\n"
+            f"Symbol: {symbol}\n"
+            f"Position: {'LONG 📈' if position_type == 'long' else 'SHORT 📉'}\n"
+            f"Entry Price: {entry_price:.2f}\n"
+            f"Position Size: {position_size:.4f}\n"
+            f"Stop Loss: {stop_loss:.2f}\n"
+            f"Take Profit: {take_profit:.2f}\n"
+            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
         self.send_message(message)
@@ -130,13 +146,13 @@ class TelegramNotifier:
             result = "LOSS"
 
         message = (
-            f"{emoji} *TRADE CLOSED - {result}*\n\n"
-            f"*Symbol:* {symbol}\n"
-            f"*Position:* {'LONG 📈' if position_type == 'long' else 'SHORT 📉'}\n"
-            f"*Entry Price:* {entry_price:.2f}\n"
-            f"*Exit Price:* {exit_price:.2f}\n"
-            f"*P/L:* {profit_loss:.4f} ({profit_loss_percent:.2f}%)\n"
-            f"*Time:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            f"{emoji} TRADE CLOSED - {result}\n\n"
+            f"Symbol: {symbol}\n"
+            f"Position: {'LONG 📈' if position_type == 'long' else 'SHORT 📉'}\n"
+            f"Entry Price: {entry_price:.2f}\n"
+            f"Exit Price: {exit_price:.2f}\n"
+            f"P/L: {profit_loss:.4f} ({profit_loss_percent:.2f}%)\n"
+            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
         self.send_message(message)
@@ -149,9 +165,9 @@ class TelegramNotifier:
             error_message (str): Error message
         """
         message = (
-            f"⚠️ *ERROR*\n\n"
+            f"⚠️ ERROR\n\n"
             f"{error_message}\n"
-            f"*Time:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
         self.send_message(message)
@@ -164,9 +180,9 @@ class TelegramNotifier:
             status_message (str): Status message
         """
         message = (
-            f"ℹ️ *SYSTEM STATUS*\n\n"
+            f"ℹ️ SYSTEM STATUS\n\n"
             f"{status_message}\n"
-            f"*Time:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
         self.send_message(message)

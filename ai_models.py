@@ -38,15 +38,21 @@ class LSTMModel:
     def __init__(self, symbol=None, timeframe=None):
         """
         Initialize the LSTM model.
-
+        
         Args:
             symbol (str): Trading symbol
-            timeframe (str): Timeframe
+            timeframe (str): Trading timeframe
         """
-        self.symbol = symbol or config.SYMBOL
-        self.timeframe = timeframe or config.TIMEFRAME
+        self.symbol = symbol
+        self.timeframe = timeframe
         self.model = None
-        self.model_path = f"models/lstm_{self.symbol}_{self.timeframe}.h5"
+        
+        # Model parameters
+        self.units = 64
+        self.dropout = 0.2
+        self.learning_rate = 0.001
+        self.loss = 'mse'
+        self.metrics = ['mae']
         
         logger.info(f"LSTM model initialized for {self.symbol} ({self.timeframe}).")
 
@@ -65,20 +71,20 @@ class LSTMModel:
             model = Sequential()
             
             # LSTM layers
-            model.add(LSTM(units=128, return_sequences=True, input_shape=input_shape))
-            model.add(Dropout(0.2))
+            model.add(LSTM(units=self.units, return_sequences=True, input_shape=input_shape))
+            model.add(Dropout(self.dropout))
             
-            model.add(LSTM(units=64, return_sequences=True))
-            model.add(Dropout(0.2))
+            model.add(LSTM(units=self.units, return_sequences=True))
+            model.add(Dropout(self.dropout))
             
-            model.add(LSTM(units=32, return_sequences=False))
-            model.add(Dropout(0.2))
+            model.add(LSTM(units=self.units, return_sequences=False))
+            model.add(Dropout(self.dropout))
             
             # Output layer
             model.add(Dense(units=output_shape))
             
             # Compile model
-            model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
+            model.compile(optimizer=Adam(learning_rate=self.learning_rate), loss=self.loss, metrics=self.metrics)
             
             self.model = model
             
@@ -112,7 +118,7 @@ class LSTMModel:
             
             # Callbacks
             early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
-            model_checkpoint = ModelCheckpoint(self.model_path, save_best_only=True)
+            model_checkpoint = ModelCheckpoint(f"models/lstm_model_{self.symbol}_{self.timeframe}.h5", save_best_only=True)
             
             # Train model
             history = self.model.fit(
@@ -158,44 +164,62 @@ class LSTMModel:
 
     def save_model(self):
         """
-        Save the LSTM model.
+        Save the model to disk.
+        
+        Returns:
+            bool: True if successful, False otherwise
         """
         try:
+            if self.model is None:
+                logger.warning("No model to save.")
+                return False
+            
             # Create models directory if it doesn't exist
             os.makedirs('models', exist_ok=True)
             
-            # Save model
-            self.model.save(self.model_path)
+            # Save model in the newer Keras format
+            model_path = f'models/lstm_model_{self.symbol}_{self.timeframe}.keras'
+            self.model.save(model_path, save_format='keras')
             
-            logger.info(f"LSTM model saved to {self.model_path}.")
+            logger.info(f"LSTM model saved to {model_path}")
+            return True
         
         except Exception as e:
             logger.error(f"Error saving LSTM model: {e}")
-            raise
+            return False
 
     def load_model(self):
         """
-        Load the LSTM model.
-
+        Load the model from disk.
+        
         Returns:
-            tensorflow.keras.models.Sequential: Loaded LSTM model
+            bool: True if successful, False otherwise
         """
         try:
-            # Check if model file exists
-            if not os.path.exists(self.model_path):
-                logger.warning(f"LSTM model file not found at {self.model_path}.")
-                return None
+            # Check for model in the newer Keras format
+            model_path_keras = f'models/lstm_model_{self.symbol}_{self.timeframe}.keras'
             
-            # Load model
-            self.model = load_model(self.model_path)
+            # Check for model in the legacy H5 format
+            model_path_h5 = f'models/lstm_model_{self.symbol}_{self.timeframe}.h5'
             
-            logger.info(f"LSTM model loaded from {self.model_path}.")
-            
-            return self.model
+            # Try to load the model from either format
+            if os.path.exists(model_path_keras):
+                self.model = tf.keras.models.load_model(model_path_keras)
+                logger.info(f"LSTM model loaded from {model_path_keras}")
+                return True
+            elif os.path.exists(model_path_h5):
+                self.model = tf.keras.models.load_model(model_path_h5)
+                logger.info(f"LSTM model loaded from {model_path_h5}")
+                # Save in the newer format for future use
+                self.save_model()
+                return True
+            else:
+                logger.warning(f"No LSTM model found for {self.symbol} ({self.timeframe}).")
+                return False
         
         except Exception as e:
             logger.error(f"Error loading LSTM model: {e}")
-            raise
+            return False
 
 
 class XGBoostModel:

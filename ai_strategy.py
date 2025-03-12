@@ -219,6 +219,30 @@ class AIStrategy(Strategy):
             # Add technical indicators
             klines = self.data_processor.add_technical_indicators(klines)
             
+            # Remove columns that weren't present during training
+            columns_to_remove = [
+                'number_of_trades', 
+                'quote_asset_volume', 
+                'taker_buy_base_asset_volume', 
+                'taker_buy_quote_asset_volume',
+                'close_time',
+                'ignore'
+            ]
+            
+            for col in columns_to_remove:
+                if col in klines.columns:
+                    klines = klines.drop(columns=[col])
+            
+            # Add sentiment features that were present during training but might be missing now
+            if 'news_sentiment' not in klines.columns:
+                klines['news_sentiment'] = 0.0
+            
+            if 'social_sentiment' not in klines.columns:
+                klines['social_sentiment'] = 0.0
+                
+            if 'google_trends' not in klines.columns:
+                klines['google_trends'] = 0.0
+            
             # Prepare data for prediction
             X = self.data_processor.prepare_data_for_prediction(klines, sequence_length=self.sequence_length)
             
@@ -336,7 +360,7 @@ class AIStrategy(Strategy):
         except Exception as e:
             logger.error(f"Error analyzing market with AI: {e}")
             if self.telegram_notifier:
-                self.telegram_notifier.notify_error(f"Error analyzing market with AI: {e}")
+                self.telegram_notifier.notify_error(f"Error analyzing market with AI: {str(e).replace('*', '')}")
             raise
 
     def open_long_position(self, analysis):

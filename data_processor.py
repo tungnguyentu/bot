@@ -442,13 +442,28 @@ class DataProcessor:
             df_pred = df.copy()
             
             # Drop unnecessary columns
-            drop_columns = ['open_time', 'close_time', 'ignore']
+            drop_columns = ['open_time', 'close_time', 'ignore', 'number_of_trades', 
+                           'quote_asset_volume', 'taker_buy_base_asset_volume', 
+                           'taker_buy_quote_asset_volume']
             df_pred = df_pred.drop([col for col in drop_columns if col in df_pred.columns], axis=1)
             
             # Load scaler
             scaler_path = f'models/feature_scaler_{self.symbol}_{self.timeframe}.pkl'
             if os.path.exists(scaler_path):
                 self.feature_scaler = joblib.load(scaler_path)
+                
+                # Get feature names from the scaler
+                if hasattr(self.feature_scaler, 'feature_names_in_'):
+                    scaler_features = self.feature_scaler.feature_names_in_
+                    
+                    # Add missing features that were present during training
+                    for feature in scaler_features:
+                        if feature not in df_pred.columns:
+                            logger.warning(f"Adding missing feature from training: {feature}")
+                            df_pred[feature] = 0.0
+                    
+                    # Ensure columns are in the same order as during training
+                    df_pred = df_pred[scaler_features]
             else:
                 logger.warning(f"Scaler not found at {scaler_path}. Using default scaler.")
             
