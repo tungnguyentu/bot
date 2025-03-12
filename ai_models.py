@@ -12,7 +12,7 @@ from datetime import datetime
 import tensorflow as tf
 from tensorflow.keras.models import Sequential, load_model, Model
 from tensorflow.keras.layers import Dense, LSTM, Dropout, Input, Concatenate
-from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.optimizers import legacy as legacy_optimizers
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
@@ -83,8 +83,12 @@ class LSTMModel:
             # Output layer
             model.add(Dense(units=output_shape))
             
-            # Compile model
-            model.compile(optimizer=Adam(learning_rate=self.learning_rate), loss=self.loss, metrics=self.metrics)
+            # Compile model with legacy Adam optimizer for better compatibility
+            model.compile(
+                optimizer=legacy_optimizers.Adam(learning_rate=self.learning_rate),
+                loss=self.loss,
+                metrics=self.metrics
+            )
             
             self.model = model
             
@@ -123,24 +127,42 @@ class LSTMModel:
             model_path_keras = f"models/lstm_model_{self.symbol}_{self.timeframe}.keras"
             
             # Callbacks
-            early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
-            model_checkpoint = ModelCheckpoint(
-                model_path_keras, 
-                save_best_only=True,
+            early_stopping = EarlyStopping(
+                monitor='val_loss',
+                patience=10,
+                restore_best_weights=True
             )
             
-            # Train model
+            # Train model without ModelCheckpoint to avoid the 'options' error
             history = self.model.fit(
                 X_train, y_train,
                 epochs=epochs,
                 batch_size=batch_size,
                 validation_data=(X_val, y_val),
-                callbacks=[early_stopping, model_checkpoint],
+                callbacks=[early_stopping],
                 verbose=1
             )
             
+            # Save the model manually after training
+            try:
+                # First try saving with the newer .keras format
+                self.model.save(model_path_keras)
+                logger.info(f"Model saved to {model_path_keras} in Keras format.")
+            except Exception as save_error:
+                logger.warning(f"Error saving in .keras format: {save_error}")
+                # Fall back to the older .h5 format
+                model_path_h5 = f"models/lstm_model_{self.symbol}_{self.timeframe}.h5"
+                try:
+                    self.model.save(model_path_h5, save_format='h5')
+                    logger.info(f"Model saved to {model_path_h5} in H5 format.")
+                except Exception as h5_error:
+                    logger.error(f"Error saving in H5 format: {h5_error}")
+                    # If both formats fail, save weights only
+                    weights_path = f"models/lstm_model_{self.symbol}_{self.timeframe}_weights"
+                    self.model.save_weights(weights_path)
+                    logger.info(f"Model weights saved to {weights_path}.")
+            
             logger.info(f"LSTM model trained for {len(history.history['loss'])} epochs.")
-            logger.info(f"Best model saved to {model_path_keras} in Keras format.")
             
             return self.model
         
@@ -187,14 +209,37 @@ class LSTMModel:
             # Create models directory if it doesn't exist
             os.makedirs('models', exist_ok=True)
             
-            # Save model in the newer Keras format
-            model_path = f'models/lstm_model_{self.symbol}_{self.timeframe}.keras'
+            # Try saving in different formats
+            success = False
             
-            # Use the newer save method without options parameter
-            self.model.save(model_path)
+            # Try saving in the newer Keras format
+            try:
+                model_path_keras = f'models/lstm_model_{self.symbol}_{self.timeframe}.keras'
+                self.model.save(model_path_keras)
+                logger.info(f"LSTM model saved to {model_path_keras}")
+                success = True
+            except Exception as keras_error:
+                logger.warning(f"Error saving in .keras format: {keras_error}")
+                
+                # Try saving in the older H5 format
+                try:
+                    model_path_h5 = f'models/lstm_model_{self.symbol}_{self.timeframe}.h5'
+                    self.model.save(model_path_h5, save_format='h5')
+                    logger.info(f"LSTM model saved to {model_path_h5}")
+                    success = True
+                except Exception as h5_error:
+                    logger.warning(f"Error saving in H5 format: {h5_error}")
+                    
+                    # If both formats fail, save weights only
+                    try:
+                        weights_path = f'models/lstm_model_{self.symbol}_{self.timeframe}_weights'
+                        self.model.save_weights(weights_path)
+                        logger.info(f"LSTM model weights saved to {weights_path}")
+                        success = True
+                    except Exception as weights_error:
+                        logger.error(f"Error saving weights: {weights_error}")
             
-            logger.info(f"LSTM model saved to {model_path}")
-            return True
+            return success
         
         except Exception as e:
             logger.error(f"Error saving LSTM model: {e}")
@@ -208,31 +253,57 @@ class LSTMModel:
             bool: True if successful, False otherwise
         """
         try:
-            # Check for model in the newer Keras format
+            # Check for model in different formats
             model_path_keras = f'models/lstm_model_{self.symbol}_{self.timeframe}.keras'
-            
-            # Check for model in the legacy H5 format
             model_path_h5 = f'models/lstm_model_{self.symbol}_{self.timeframe}.h5'
+            weights_path = f'models/lstm_model_{self.symbol}_{self.timeframe}_weights'
             
-            # Try to load the model from either format
+            # Try loading from .keras format
             if os.path.exists(model_path_keras):
                 try:
-                    self.model = tf.keras.models.load_model(model_path_keras)
+                    self.model = tf.keras.models.load_model(model_path_keras, compile=False)
+                    # Recompile the model with legacy Adam optimizer
+                    self.model.compile(
+                        optimizer=legacy_optimizers.Adam(learning_rate=self.learning_rate),
+                        loss=self.loss,
+                        metrics=self.metrics
+                    )
                     logger.info(f"LSTM model loaded from {model_path_keras}")
                     return True
-                except Exception as e:
-                    logger.error(f"Error loading model from {model_path_keras}: {e}")
-                    # If there's an error with the Keras format, try the H5 format as fallback
+                except Exception as keras_error:
+                    logger.warning(f"Error loading from {model_path_keras}: {keras_error}")
             
+            # Try loading from .h5 format
             if os.path.exists(model_path_h5):
                 try:
-                    self.model = tf.keras.models.load_model(model_path_h5)
+                    self.model = tf.keras.models.load_model(model_path_h5, compile=False)
+                    # Recompile the model with legacy Adam optimizer
+                    self.model.compile(
+                        optimizer=legacy_optimizers.Adam(learning_rate=self.learning_rate),
+                        loss=self.loss,
+                        metrics=self.metrics
+                    )
                     logger.info(f"LSTM model loaded from {model_path_h5}")
-                    # Save in the newer format for future use
-                    self.save_model()
+                    # Try to save in the newer format for future use
+                    try:
+                        self.save_model()
+                    except Exception as save_error:
+                        logger.warning(f"Error saving model in newer format: {save_error}")
                     return True
-                except Exception as e:
-                    logger.error(f"Error loading model from {model_path_h5}: {e}")
+                except Exception as h5_error:
+                    logger.warning(f"Error loading from {model_path_h5}: {h5_error}")
+            
+            # Try loading weights only
+            if os.path.exists(weights_path + '.index'):
+                try:
+                    # Build the model first
+                    self.build_model(input_shape=(30, 46))  # Default shape, will be adjusted during training
+                    # Load weights
+                    self.model.load_weights(weights_path)
+                    logger.info(f"LSTM model weights loaded from {weights_path}")
+                    return True
+                except Exception as weights_error:
+                    logger.warning(f"Error loading weights from {weights_path}: {weights_error}")
             
             logger.warning(f"No LSTM model found for {self.symbol} ({self.timeframe}).")
             return False

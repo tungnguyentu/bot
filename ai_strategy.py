@@ -185,10 +185,22 @@ class AIStrategy(Strategy):
             self.random_forest_model.build_model()
             self.random_forest_model.train(X_train_flat, y_train_class)
             
-            # Train RL model
-            env = TradingEnvironment(df, initial_balance=10000, transaction_fee=0.001, window_size=self.sequence_length)
-            self.rl_model.build_model(env)
-            self.rl_model.train(env, total_timesteps=10000)
+            # Try to train RL model, but don't fail if it doesn't work
+            try:
+                env = TradingEnvironment(df, initial_balance=10000, transaction_fee=0.001, window_size=self.sequence_length)
+                self.rl_model.build_model(env)
+                self.rl_model.train(env, total_timesteps=10000)
+            except Exception as rl_error:
+                logger.warning(f"Error training RL model: {rl_error}")
+                logger.warning("Continuing without RL model.")
+                # Set RL model weight to 0
+                if 'rl' in self.model_weights:
+                    self.model_weights['rl'] = 0.0
+                    # Normalize other weights
+                    total_weight = sum(self.model_weights.values())
+                    if total_weight > 0:
+                        for key in self.model_weights:
+                            self.model_weights[key] /= total_weight
             
             # Set up ensemble model
             self._setup_ensemble()
@@ -251,16 +263,85 @@ class AIStrategy(Strategy):
             
             # Make predictions
             if self.use_ensemble and len(self.ensemble_model.models) > 0:
-                # Use ensemble model
-                signal_proba = self.ensemble_model.predict_proba(X)[0]
-                
-                # Generate signals based on probability and confidence threshold
-                long_signal = signal_proba > self.confidence_threshold
-                short_signal = signal_proba < (1 - self.confidence_threshold)
-                
-                # Calculate confidence scores
-                long_confidence = signal_proba
-                short_confidence = 1 - signal_proba
+                try:
+                    # Prepare flattened input for XGBoost and Random Forest models
+                    X_flat = X.reshape(X.shape[0], -1)
+                    logger.info(f"Ensemble input shape: {X.shape}, flattened: {X_flat.shape}")
+                    
+                    # Use ensemble model with appropriate input format for each model
+                    signal_proba = 0.5  # Default neutral value
+                    
+                    # Get probability predictions from each model
+                    probabilities = {}
+                    total_weight = 0
+                    
+                    for model_name, model in self.ensemble_model.models.items():
+                        try:
+                            if model_name == 'lstm':
+                                # LSTM uses 3D input
+                                pred = model.predict(X)
+                                # Convert to probability: sigmoid(pred)
+                                probabilities[model_name] = 1 / (1 + np.exp(-pred))[0][0]
+                                total_weight += self.ensemble_model.weights[model_name]
+                            elif model_name == 'xgboost' or model_name == 'random_forest':
+                                # XGBoost and Random Forest use flattened input
+                                # Check for and handle NaN values
+                                if np.isnan(X_flat).any():
+                                    logger.warning(f"NaN values detected in input for {model_name}. Filling with 0.")
+                                    X_flat_clean = np.nan_to_num(X_flat, nan=0.0)
+                                else:
+                                    X_flat_clean = X_flat
+                                
+                                probabilities[model_name] = model.predict_proba(X_flat_clean)[0][1]
+                                total_weight += self.ensemble_model.weights[model_name]
+                            elif model_name == 'rl':
+                                # RL model
+                                try:
+                                    # Extract the last observation from the sequence and adapt to expected shape
+                                    last_observation = X[0, -1, :]
+                                    # The RL model expects 33 features, but we have 46
+                                    # We'll use the first 33 features as a simple solution
+                                    if len(last_observation) > 33:
+                                        last_observation = last_observation[:33]
+                                    elif len(last_observation) < 33:
+                                        # Pad with zeros if we have fewer features
+                                        last_observation = np.pad(last_observation, (0, 33 - len(last_observation)))
+                                    
+                                    # Check for and handle NaN values
+                                    if np.isnan(last_observation).any():
+                                        logger.warning(f"NaN values detected in input for RL model. Filling with 0.")
+                                        last_observation = np.nan_to_num(last_observation, nan=0.0)
+                                    
+                                    logger.info(f"RL input shape: {last_observation.shape}")
+                                    rl_action = model.predict(last_observation)
+                                    probabilities[model_name] = 0.5 if rl_action == 0 else 0.7
+                                    total_weight += self.ensemble_model.weights[model_name]
+                                except Exception as model_error:
+                                    logger.error(f"Error with {model_name} model in ensemble: {model_error}")
+                        except Exception as model_error:
+                            logger.error(f"Error with {model_name} model in ensemble: {model_error}")
+                    
+                    # Combine probabilities with weights if we have any valid predictions
+                    if probabilities and total_weight > 0:
+                        signal_proba = 0
+                        for model_name, prob in probabilities.items():
+                            signal_proba += prob * self.ensemble_model.weights[model_name]
+                        signal_proba /= total_weight
+                    
+                    # Generate signals based on probability and confidence threshold
+                    long_signal = signal_proba > self.confidence_threshold
+                    short_signal = signal_proba < (1 - self.confidence_threshold)
+                    
+                    # Calculate confidence scores
+                    long_confidence = signal_proba
+                    short_confidence = 1 - signal_proba
+                except Exception as e:
+                    logger.error(f"Error making probability predictions with ensemble model: {e}")
+                    # Default to neutral values
+                    long_signal = False
+                    short_signal = False
+                    long_confidence = 0.5
+                    short_confidence = 0.5
             else:
                 # Use individual models
                 predictions = {}
@@ -276,29 +357,80 @@ class AIStrategy(Strategy):
                 
                 # XGBoost prediction
                 if self.xgboost_model.model is not None:
-                    X_flat = X.reshape(X.shape[0], -1)
-                    xgb_proba = self.xgboost_model.predict_proba(X_flat)[0][1]
-                    predictions['xgboost'] = 1 if xgb_proba > 0.5 else 0
-                    xgb_confidence = xgb_proba if xgb_proba > 0.5 else 1 - xgb_proba
+                    try:
+                        # Flatten the input properly to match the expected shape
+                        X_flat = X.reshape(X.shape[0], -1)
+                        # Check if the shape matches what's expected
+                        logger.info(f"XGBoost input shape: {X_flat.shape}")
+                        
+                        # Check for and handle NaN values
+                        if np.isnan(X_flat).any():
+                            logger.warning(f"NaN values detected in input for XGBoost. Filling with 0.")
+                            X_flat_clean = np.nan_to_num(X_flat, nan=0.0)
+                        else:
+                            X_flat_clean = X_flat
+                        
+                        xgb_proba = self.xgboost_model.predict_proba(X_flat_clean)[0][1]
+                        predictions['xgboost'] = 1 if xgb_proba > 0.5 else 0
+                        xgb_confidence = xgb_proba if xgb_proba > 0.5 else 1 - xgb_proba
+                    except Exception as e:
+                        logger.error(f"Error making probability predictions with XGBoost model: {e}")
+                        predictions['xgboost'] = 0
+                        xgb_confidence = 0
                 else:
                     predictions['xgboost'] = 0
                     xgb_confidence = 0
                 
                 # Random Forest prediction
                 if self.random_forest_model.model is not None:
-                    X_flat = X.reshape(X.shape[0], -1)
-                    rf_proba = self.random_forest_model.predict_proba(X_flat)[0][1]
-                    predictions['random_forest'] = 1 if rf_proba > 0.5 else 0
-                    rf_confidence = rf_proba if rf_proba > 0.5 else 1 - rf_proba
+                    try:
+                        # Use the same flattened input as XGBoost
+                        # Check for and handle NaN values
+                        if np.isnan(X_flat).any():
+                            logger.warning(f"NaN values detected in input for Random Forest. Filling with 0.")
+                            X_flat_clean = np.nan_to_num(X_flat, nan=0.0)
+                        else:
+                            X_flat_clean = X_flat
+                            
+                        rf_proba = self.random_forest_model.predict_proba(X_flat_clean)[0][1]
+                        predictions['random_forest'] = 1 if rf_proba > 0.5 else 0
+                        rf_confidence = rf_proba if rf_proba > 0.5 else 1 - rf_proba
+                    except Exception as e:
+                        logger.error(f"Error making probability predictions with Random Forest model: {e}")
+                        predictions['random_forest'] = 0
+                        rf_confidence = 0
                 else:
                     predictions['random_forest'] = 0
                     rf_confidence = 0
                 
                 # RL prediction
                 if self.rl_model.model is not None:
-                    rl_action = self.rl_model.predict(X[0])
-                    predictions['rl'] = 1 if rl_action == 1 else 0
-                    rl_confidence = 0.8  # Fixed confidence for RL
+                    try:
+                        # RL model expects a specific observation shape
+                        # Extract the last observation from the sequence
+                        last_observation = X[0, -1, :]
+                        
+                        # The RL model expects 33 features, but we have 46
+                        # We'll use the first 33 features as a simple solution
+                        if len(last_observation) > 33:
+                            last_observation = last_observation[:33]
+                        elif len(last_observation) < 33:
+                            # Pad with zeros if we have fewer features
+                            last_observation = np.pad(last_observation, (0, 33 - len(last_observation)))
+                        
+                        # Check for and handle NaN values
+                        if np.isnan(last_observation).any():
+                            logger.warning(f"NaN values detected in input for individual RL model. Filling with 0.")
+                            last_observation = np.nan_to_num(last_observation, nan=0.0)
+                        
+                        logger.info(f"Individual RL input shape: {last_observation.shape}")
+                        rl_action = self.rl_model.predict(last_observation)
+                        predictions['rl'] = 1 if rl_action > 0 else 0
+                        rl_confidence = 0.6  # Default confidence for RL model
+                    except Exception as e:
+                        logger.error(f"Error making predictions with RL model: {e}")
+                        predictions['rl'] = 0
+                        rl_confidence = 0
                 else:
                     predictions['rl'] = 0
                     rl_confidence = 0
