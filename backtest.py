@@ -133,26 +133,44 @@ class Backtester:
             
             logger.info(f"Fetching historical data for {self.symbol} from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
             
-            # Fetch historical data
-            ohlcv = self.exchange.fetch_ohlcv(
-                symbol=self.symbol,
-                timeframe=self.timeframe,
-                since=start_timestamp,
-                limit=1000
-            )
+            try:
+                # Fetch historical data
+                ohlcv = self.exchange.fetch_ohlcv(
+                    symbol=self.symbol,
+                    timeframe=self.timeframe,
+                    since=start_timestamp,
+                    limit=1000
+                )
+                
+                # Check if data is empty
+                if not ohlcv or len(ohlcv) == 0:
+                    logger.error(f"No historical data found for {self.symbol} from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+                    raise ValueError(f"No historical data found for {self.symbol}")
+                
+                # Convert to DataFrame
+                df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                df.set_index('timestamp', inplace=True)
+                
+                # Filter by date range
+                df = df[(df.index >= start_date) & (df.index <= end_date)]
+                
+                # Check if filtered data is empty
+                if len(df) == 0:
+                    logger.error(f"No data found for {self.symbol} in the specified date range")
+                    raise ValueError(f"No data found for {self.symbol} in the specified date range")
+                
+                logger.info(f"Fetched {len(df)} candles for {self.symbol}")
+                
+                return df
             
-            # Convert to DataFrame
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
+            except ccxt.NetworkError as e:
+                logger.error(f"Network error fetching historical data: {e}")
+                raise ValueError(f"Network error: {e}")
+            except ccxt.ExchangeError as e:
+                logger.error(f"Exchange error fetching historical data: {e}")
+                raise ValueError(f"Exchange error: {e}")
             
-            # Filter by date range
-            df = df[(df.index >= start_date) & (df.index <= end_date)]
-            
-            logger.info(f"Fetched {len(df)} candles for {self.symbol}")
-            
-            return df
-        
         except Exception as e:
             logger.error(f"Error fetching historical data: {e}")
             raise
@@ -168,6 +186,19 @@ class Backtester:
             pd.DataFrame: Prepared data
         """
         try:
+            # Check if data is empty
+            if data is None or len(data) == 0:
+                logger.error("Historical data is empty")
+                raise ValueError("Historical data is empty")
+            
+            # Check if required columns exist
+            required_columns = ['open', 'high', 'low', 'close', 'volume']
+            for col in required_columns:
+                if col not in data.columns:
+                    logger.error(f"Required column '{col}' not found in historical data")
+                    logger.error(f"Available columns: {data.columns.tolist()}")
+                    raise ValueError(f"Required column '{col}' not found in historical data")
+            
             # Add indicators
             df = data.copy()
             
@@ -215,29 +246,45 @@ class Backtester:
         """
         try:
             # Fetch historical data
-            data = self.fetch_historical_data()
+            try:
+                data = self.fetch_historical_data()
+            except Exception as e:
+                logger.error(f"Error fetching historical data: {e}")
+                return None
             
             # Prepare data
-            self.data = self.prepare_data(data)
+            try:
+                self.data = self.prepare_data(data)
+            except Exception as e:
+                logger.error(f"Error preparing data: {e}")
+                return None
             
             # Initialize strategy
             if self.strategy_class:
-                # Create a mock binance client for the strategy
-                mock_client = type('MockBinanceClient', (), {
-                    'get_klines': lambda symbol, timeframe, limit: self.data.iloc[-limit:].copy() if limit else self.data.copy(),
-                    'create_market_order': lambda symbol, side, amount: {'orderId': 'backtest'},
-                    'get_position': lambda symbol: None,
-                    'get_balance': lambda: {'total': self.initial_balance},
-                    'set_leverage': lambda symbol, leverage: None
-                })
-                
-                # Initialize strategy
-                self.strategy = self.strategy_class(mock_client, None, self.symbol, self.timeframe, self.leverage)
-                
-                # If it's an AI strategy, we need to train the models
-                if self.is_ai_strategy and hasattr(self.strategy, 'train_models'):
-                    logger.info("Training AI models for backtesting...")
-                    self.strategy.train_models()
+                try:
+                    # Create a mock binance client for the strategy
+                    mock_client = type('MockBinanceClient', (), {
+                        'get_klines': lambda symbol, timeframe, limit: self.data.iloc[-limit:].copy() if limit else self.data.copy(),
+                        'create_market_order': lambda symbol, side, amount: {'orderId': 'backtest'},
+                        'get_position': lambda symbol: None,
+                        'get_balance': lambda: {'total': self.initial_balance},
+                        'set_leverage': lambda symbol, leverage: None
+                    })
+                    
+                    # Initialize strategy
+                    self.strategy = self.strategy_class(mock_client, None, self.symbol, self.timeframe, self.leverage)
+                    
+                    # If it's an AI strategy, we need to train the models
+                    if self.is_ai_strategy and hasattr(self.strategy, 'train_models'):
+                        logger.info("Training AI models for backtesting...")
+                        try:
+                            self.strategy.train_models()
+                        except Exception as e:
+                            logger.error(f"Error training AI models: {e}")
+                            return None
+                except Exception as e:
+                    logger.error(f"Error initializing strategy: {e}")
+                    return None
             else:
                 logger.error("No strategy class provided")
                 return None
