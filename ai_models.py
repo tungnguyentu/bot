@@ -735,9 +735,9 @@ class TradingEnvironment(gym.Env):
         # Action space: 0 = hold, 1 = buy, 2 = sell
         self.action_space = spaces.Discrete(3)
         
-        # Observation space: price data + account info
+        # Observation space: fixed size of 48 features
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(window_size + 3,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(48,), dtype=np.float32
         )
         
         # Reset environment
@@ -837,7 +837,7 @@ class TradingEnvironment(gym.Env):
         Get the current observation.
 
         Returns:
-            np.array: Observation
+            np.array: Observation with shape (48,)
         """
         # Get window of price data
         price_window = self.df.iloc[self.current_step - self.window_size:self.current_step]['close'].values
@@ -854,6 +854,12 @@ class TradingEnvironment(gym.Env):
                 self.cost_basis / self.df.iloc[self.current_step]['close'] if self.cost_basis > 0 else 0
             ]
         )
+        
+        # Ensure observation has the correct shape (48,)
+        if len(observation) > 48:
+            observation = observation[:48]
+        elif len(observation) < 48:
+            observation = np.pad(observation, (0, 48 - len(observation)))
         
         return observation
 

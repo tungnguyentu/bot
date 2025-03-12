@@ -297,15 +297,15 @@ class AIStrategy(Strategy):
                             elif model_name == 'rl':
                                 # RL model
                                 try:
-                                    # Extract the last observation from the sequence and adapt to expected shape
+                                    # Extract the last observation from the sequence
                                     last_observation = X[0, -1, :]
-                                    # The RL model expects 33 features, but we have 46
-                                    # We'll use the first 33 features as a simple solution
-                                    if len(last_observation) > 33:
-                                        last_observation = last_observation[:33]
-                                    elif len(last_observation) < 33:
+                                    
+                                    # The RL model expects 48 features
+                                    if len(last_observation) > 48:
+                                        last_observation = last_observation[:48]
+                                    elif len(last_observation) < 48:
                                         # Pad with zeros if we have fewer features
-                                        last_observation = np.pad(last_observation, (0, 33 - len(last_observation)))
+                                        last_observation = np.pad(last_observation, (0, 48 - len(last_observation)))
                                     
                                     # Check for and handle NaN values
                                     if np.isnan(last_observation).any():
@@ -410,13 +410,12 @@ class AIStrategy(Strategy):
                         # Extract the last observation from the sequence
                         last_observation = X[0, -1, :]
                         
-                        # The RL model expects 33 features, but we have 46
-                        # We'll use the first 33 features as a simple solution
-                        if len(last_observation) > 33:
-                            last_observation = last_observation[:33]
-                        elif len(last_observation) < 33:
+                        # The RL model expects 48 features
+                        if len(last_observation) > 48:
+                            last_observation = last_observation[:48]
+                        elif len(last_observation) < 48:
                             # Pad with zeros if we have fewer features
-                            last_observation = np.pad(last_observation, (0, 33 - len(last_observation)))
+                            last_observation = np.pad(last_observation, (0, 48 - len(last_observation)))
                         
                         # Check for and handle NaN values
                         if np.isnan(last_observation).any():
