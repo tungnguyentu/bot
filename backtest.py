@@ -117,15 +117,33 @@ class Backtester:
         try:
             # Calculate start and end timestamps
             if self.end_date:
-                end_date = datetime.strptime(self.end_date, '%Y-%m-%d')
+                try:
+                    end_date = datetime.strptime(self.end_date, '%Y-%m-%d')
+                except ValueError:
+                    logger.error(f"Invalid end date format: {self.end_date}. Expected format: YYYY-MM-DD")
+                    return None
             else:
                 end_date = datetime.now()
             
             if self.start_date:
-                start_date = datetime.strptime(self.start_date, '%Y-%m-%d')
+                try:
+                    start_date = datetime.strptime(self.start_date, '%Y-%m-%d')
+                except ValueError:
+                    logger.error(f"Invalid start date format: {self.start_date}. Expected format: YYYY-MM-DD")
+                    return None
             else:
                 # Default to 30 days before end date
                 start_date = end_date - timedelta(days=30)
+            
+            # Validate date range
+            if start_date >= end_date:
+                logger.error(f"Start date ({start_date.strftime('%Y-%m-%d')}) must be before end date ({end_date.strftime('%Y-%m-%d')})")
+                return None
+                
+            # Check if start date is in the future
+            if start_date > datetime.now():
+                logger.error(f"Start date ({start_date.strftime('%Y-%m-%d')}) cannot be in the future")
+                return None
             
             # Convert to milliseconds timestamp
             start_timestamp = int(start_date.timestamp() * 1000)
@@ -142,38 +160,50 @@ class Backtester:
                     limit=1000
                 )
                 
-                # Check if data is empty
+                # Check if data was returned
                 if not ohlcv or len(ohlcv) == 0:
-                    logger.error(f"No historical data found for {self.symbol} from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
-                    raise ValueError(f"No historical data found for {self.symbol}")
+                    logger.error(f"No data returned for {self.symbol} from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+                    return None
+                
+                # Log raw data for debugging
+                logger.info(f"Raw data sample: {ohlcv[:1]}")
                 
                 # Convert to DataFrame
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                 df.set_index('timestamp', inplace=True)
                 
+                # Log DataFrame info
+                logger.info(f"DataFrame info before filtering: {df.shape}")
+                logger.info(f"DataFrame date range: {df.index.min()} to {df.index.max()}")
+                
                 # Filter by date range
                 df = df[(df.index >= start_date) & (df.index <= end_date)]
                 
+                # Log filtered DataFrame info
+                logger.info(f"DataFrame info after filtering: {df.shape}")
+                
                 # Check if filtered data is empty
-                if len(df) == 0:
-                    logger.error(f"No data found for {self.symbol} in the specified date range")
-                    raise ValueError(f"No data found for {self.symbol} in the specified date range")
+                if df.empty:
+                    logger.error(f"No data available for {self.symbol} in the specified date range")
+                    return None
                 
                 logger.info(f"Fetched {len(df)} candles for {self.symbol}")
                 
                 return df
-            
             except ccxt.NetworkError as e:
                 logger.error(f"Network error fetching historical data: {e}")
-                raise ValueError(f"Network error: {e}")
+                return None
             except ccxt.ExchangeError as e:
                 logger.error(f"Exchange error fetching historical data: {e}")
-                raise ValueError(f"Exchange error: {e}")
-            
+                return None
+            except Exception as e:
+                logger.error(f"Unexpected error fetching historical data: {e}")
+                return None
+        
         except Exception as e:
             logger.error(f"Error fetching historical data: {e}")
-            raise
+            return None
     
     def prepare_data(self, data):
         """
@@ -187,55 +217,104 @@ class Backtester:
         """
         try:
             # Check if data is empty
-            if data is None or len(data) == 0:
-                logger.error("Historical data is empty")
-                raise ValueError("Historical data is empty")
-            
+            if data is None or data.empty:
+                logger.error("No historical data available for backtesting")
+                return None
+                
             # Check if required columns exist
             required_columns = ['open', 'high', 'low', 'close', 'volume']
-            for col in required_columns:
-                if col not in data.columns:
-                    logger.error(f"Required column '{col}' not found in historical data")
-                    logger.error(f"Available columns: {data.columns.tolist()}")
-                    raise ValueError(f"Required column '{col}' not found in historical data")
+            missing_columns = [col for col in required_columns if col not in data.columns]
+            if missing_columns:
+                logger.error(f"Missing required columns: {missing_columns}")
+                return None
+            
+            # Log data info for debugging
+            logger.info(f"Data shape: {data.shape}")
+            logger.info(f"Data columns: {data.columns.tolist()}")
+            logger.info(f"Data types: {data.dtypes.to_dict()}")
+            logger.info(f"Data sample: {data.head(1).to_dict()}")
             
             # Add indicators
             df = data.copy()
             
-            # Add RSI
-            df['rsi'] = calculate_rsi(df['close'])
+            try:
+                # Add RSI
+                logger.info("Calculating RSI...")
+                df['rsi'] = calculate_rsi(df['close'])
+            except Exception as e:
+                logger.error(f"Error calculating RSI: {e}")
+                return None
             
-            # Add VWAP
-            df['vwap'] = calculate_vwap(df)
+            try:
+                # Add VWAP
+                logger.info("Calculating VWAP...")
+                df['vwap'] = calculate_vwap(df)
+            except Exception as e:
+                logger.error(f"Error calculating VWAP: {e}")
+                return None
             
-            # Add ATR
-            df['atr'] = calculate_atr(df)
+            try:
+                # Add ATR
+                logger.info("Calculating ATR...")
+                df['atr'] = calculate_atr(df)
+            except Exception as e:
+                logger.error(f"Error calculating ATR: {e}")
+                return None
             
-            # Add volume spike
-            df['volume_spike'] = detect_volume_spike(df['volume'])
+            try:
+                # Add volume spike
+                logger.info("Detecting volume spikes...")
+                df['volume_spike'] = detect_volume_spike(df['volume'])
+            except Exception as e:
+                logger.error(f"Error detecting volume spikes: {e}")
+                return None
             
-            # Add Bollinger Bands
-            df['bb_upper'], df['bb_middle'], df['bb_lower'] = calculate_bollinger_bands(df['close'])
+            try:
+                # Add Bollinger Bands
+                logger.info("Calculating Bollinger Bands...")
+                df['bb_upper'], df['bb_middle'], df['bb_lower'] = calculate_bollinger_bands(df['close'])
+            except Exception as e:
+                logger.error(f"Error calculating Bollinger Bands: {e}")
+                return None
             
-            # Add MACD
-            df['macd'], df['macd_signal'], df['macd_hist'] = calculate_macd(df['close'])
+            try:
+                # Add MACD
+                logger.info("Calculating MACD...")
+                df['macd'], df['macd_signal'], df['macd_hist'] = calculate_macd(df['close'])
+            except Exception as e:
+                logger.error(f"Error calculating MACD: {e}")
+                return None
             
-            # Add returns
-            df['return'] = df['close'].pct_change()
+            try:
+                # Add returns
+                logger.info("Calculating returns...")
+                df['return'] = df['close'].pct_change()
+            except Exception as e:
+                logger.error(f"Error calculating returns: {e}")
+                return None
             
-            # Add target for AI models
-            df['return_1'] = df['close'].pct_change(1).shift(-1)  # Next candle's return
-            df['return_5'] = df['close'].pct_change(5).shift(-5)  # 5 candles ahead return
-            df['return_10'] = df['close'].pct_change(10).shift(-10)  # 10 candles ahead return
+            try:
+                # Add target for AI models
+                logger.info("Calculating target variables...")
+                df['return_1'] = df['close'].pct_change(1).shift(-1)  # Next candle's return
+                df['return_5'] = df['close'].pct_change(5).shift(-5)  # 5 candles ahead return
+                df['return_10'] = df['close'].pct_change(10).shift(-10)  # 10 candles ahead return
+            except Exception as e:
+                logger.error(f"Error calculating target variables: {e}")
+                return None
             
             # Drop NaN values
             df.dropna(inplace=True)
+            
+            logger.info(f"Prepared data shape: {df.shape}")
             
             return df
         
         except Exception as e:
             logger.error(f"Error preparing data: {e}")
-            raise
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return None
     
     def run_backtest(self):
         """
@@ -246,45 +325,39 @@ class Backtester:
         """
         try:
             # Fetch historical data
-            try:
-                data = self.fetch_historical_data()
-            except Exception as e:
-                logger.error(f"Error fetching historical data: {e}")
-                return None
+            data = self.fetch_historical_data()
             
+            # Check if data is valid
+            if data is None or data.empty:
+                logger.error("No historical data available for backtesting")
+                return None
+                
             # Prepare data
-            try:
-                self.data = self.prepare_data(data)
-            except Exception as e:
-                logger.error(f"Error preparing data: {e}")
+            self.data = self.prepare_data(data)
+            
+            # Check if prepared data is valid
+            if self.data is None or self.data.empty:
+                logger.error("Failed to prepare data for backtesting")
                 return None
             
             # Initialize strategy
             if self.strategy_class:
-                try:
-                    # Create a mock binance client for the strategy
-                    mock_client = type('MockBinanceClient', (), {
-                        'get_klines': lambda symbol, timeframe, limit: self.data.iloc[-limit:].copy() if limit else self.data.copy(),
-                        'create_market_order': lambda symbol, side, amount: {'orderId': 'backtest'},
-                        'get_position': lambda symbol: None,
-                        'get_balance': lambda: {'total': self.initial_balance},
-                        'set_leverage': lambda symbol, leverage: None
-                    })
-                    
-                    # Initialize strategy
-                    self.strategy = self.strategy_class(mock_client, None, self.symbol, self.timeframe, self.leverage)
-                    
-                    # If it's an AI strategy, we need to train the models
-                    if self.is_ai_strategy and hasattr(self.strategy, 'train_models'):
-                        logger.info("Training AI models for backtesting...")
-                        try:
-                            self.strategy.train_models()
-                        except Exception as e:
-                            logger.error(f"Error training AI models: {e}")
-                            return None
-                except Exception as e:
-                    logger.error(f"Error initializing strategy: {e}")
-                    return None
+                # Create a mock binance client for the strategy
+                mock_client = type('MockBinanceClient', (), {
+                    'get_klines': lambda symbol, timeframe, limit: self.data.iloc[-limit:].copy() if limit else self.data.copy(),
+                    'create_market_order': lambda symbol, side, amount: {'orderId': 'backtest'},
+                    'get_position': lambda symbol: None,
+                    'get_balance': lambda: {'total': self.initial_balance},
+                    'set_leverage': lambda symbol, leverage: None
+                })
+                
+                # Initialize strategy
+                self.strategy = self.strategy_class(mock_client, None, self.symbol, self.timeframe, self.leverage)
+                
+                # If it's an AI strategy, we need to train the models
+                if self.is_ai_strategy and hasattr(self.strategy, 'train_models'):
+                    logger.info("Training AI models for backtesting...")
+                    self.strategy.train_models()
             else:
                 logger.error("No strategy class provided")
                 return None
@@ -721,6 +794,70 @@ class Backtester:
     def calculate_statistics(self):
         # Implementation of calculate_statistics method
         pass
+
+    def plot_results(self, results):
+        """
+        Plot backtest results.
+        
+        Args:
+            results (dict): Backtest results
+        """
+        try:
+            if not results or 'balance' not in results or not results['balance']:
+                logger.error("No results to plot")
+                return
+            
+            # Create directory for plots if it doesn't exist
+            os.makedirs('plots', exist_ok=True)
+            
+            # Create figure
+            fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 10), gridspec_kw={'height_ratios': [3, 1, 1]})
+            
+            # Plot price
+            ax1.plot(results['dates'], results['prices'], label='Price', color='blue')
+            ax1.set_ylabel('Price')
+            ax1.set_title(f'Backtest Results for {self.symbol} ({self.timeframe})')
+            ax1.grid(True)
+            
+            # Plot trades
+            for trade in results['trades']:
+                if trade['side'] == 'buy':
+                    ax1.scatter(trade['entry_date'], trade['entry_price'], color='green', marker='^', s=100)
+                    if trade['exit_date']:
+                        ax1.scatter(trade['exit_date'], trade['exit_price'], color='red', marker='v', s=100)
+                        ax1.plot([trade['entry_date'], trade['exit_date']], 
+                                [trade['entry_price'], trade['exit_price']], 
+                                color='gray', linestyle='--', alpha=0.5)
+                else:  # sell
+                    ax1.scatter(trade['entry_date'], trade['entry_price'], color='red', marker='v', s=100)
+                    if trade['exit_date']:
+                        ax1.scatter(trade['exit_date'], trade['exit_price'], color='green', marker='^', s=100)
+                        ax1.plot([trade['entry_date'], trade['exit_date']], 
+                                [trade['entry_price'], trade['exit_price']], 
+                                color='gray', linestyle='--', alpha=0.5)
+            
+            # Plot balance
+            ax2.plot(results['dates'], results['balance'], label='Balance', color='green')
+            ax2.set_ylabel('Balance')
+            ax2.grid(True)
+            
+            # Plot drawdown
+            ax3.fill_between(results['dates'], results['drawdown'], 0, color='red', alpha=0.3)
+            ax3.set_ylabel('Drawdown (%)')
+            ax3.set_xlabel('Date')
+            ax3.grid(True)
+            
+            # Save plot
+            plt.tight_layout()
+            filename = f"plots/backtest_{self.symbol}_{self.timeframe}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            plt.savefig(filename)
+            logger.info(f"Backtest plot saved to {filename}")
+            
+            # Close plot
+            plt.close()
+            
+        except Exception as e:
+            logger.error(f"Error plotting results: {e}")
 
 
 if __name__ == "__main__":
