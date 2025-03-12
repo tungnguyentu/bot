@@ -70,7 +70,22 @@ def run_bot(test_mode=False, api_key=None, api_secret=None, symbol=None, leverag
     telegram_notifier = None  # Initialize to None to avoid UnboundLocalError
     
     try:
-        logger.info("Starting AI Trading Bot...")
+        # Set default values from config if not provided
+        symbol = symbol or config.SYMBOL
+        leverage = leverage or config.LEVERAGE
+        
+        # Check if it's an AI strategy
+        is_ai_strategy = strategy_name.startswith('ai')
+        
+        # Log startup information
+        if test_mode:
+            logger.info(f"Starting AI Trading Bot in TEST MODE (no real trades)...")
+            if is_ai_strategy:
+                logger.info(f"Using AI strategy: {strategy_name.upper()}")
+                if train_ai:
+                    logger.info(f"AI models will be trained before running")
+        else:
+            logger.info(f"Starting AI Trading Bot in LIVE MODE...")
         
         # Get strategy class and default timeframe
         strategy_class, default_timeframe = get_strategy_class(strategy_name.lower())
@@ -106,15 +121,25 @@ def run_bot(test_mode=False, api_key=None, api_secret=None, symbol=None, leverag
         
         # Train AI models if requested and if it's an AI strategy
         if train_ai and strategy_name.startswith('ai'):
-            logger.info(f"Training AI models for {strategy_name}...")
+            logger.info(f"Training AI models for {strategy_name.upper()} strategy...")
             if hasattr(strategy, 'train_models'):
+                # Log training parameters
+                logger.info(f"Training period: {start_date or 'default start'} to {end_date or 'default end'}")
+                
+                # Train models
                 success = strategy.train_models(start_date=start_date, end_date=end_date)
+                
                 if success:
                     logger.info("AI models trained successfully.")
+                    if test_mode:
+                        logger.info("Continuing to run in TEST MODE with trained models.")
+                    else:
+                        logger.info("Continuing to run in LIVE MODE with trained models.")
                 else:
                     logger.error("Failed to train AI models.")
                     if telegram_notifier:
                         telegram_notifier.notify_error("Failed to train AI models.")
+                    return  # Exit if training failed
             else:
                 logger.warning(f"Strategy {strategy_name} does not support training.")
         
@@ -133,11 +158,24 @@ def run_bot(test_mode=False, api_key=None, api_secret=None, symbol=None, leverag
         # Send startup notification
         if telegram_notifier:
             try:
-                telegram_notifier.notify_system_status(
+                # Create a more detailed status message
+                mode_str = 'TEST' if test_mode else 'LIVE'
+                ai_str = ' (AI-powered)' if strategy_name.startswith('ai') else ''
+                
+                status_message = (
                     f"AI Trading Bot started for {symbol} ({timeframe}).\n"
-                    f"Strategy: {strategy_name.upper()}\n"
-                    f"Mode: {'TEST' if test_mode else 'LIVE'}"
+                    f"Strategy: {strategy_name.upper()}{ai_str}\n"
+                    f"Mode: {mode_str}\n"
                 )
+                
+                # Add training info if applicable
+                if train_ai and strategy_name.startswith('ai'):
+                    status_message += f"AI models: Trained\n"
+                
+                # Add leverage info
+                status_message += f"Leverage: {leverage}x"
+                
+                telegram_notifier.notify_system_status(status_message)
             except Exception as e:
                 logger.error(f"Error sending Telegram notification: {e}")
         
@@ -295,6 +333,7 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
+    # Check if we need to run a backtest
     if args.backtest:
         run_backtest(
             symbol=args.symbol,
@@ -304,6 +343,22 @@ if __name__ == "__main__":
             end_date=args.backtest_end,
             strategy_name=args.strategy
         )
+    # Check if we need to train AI models and then run in test mode
+    elif args.train_ai and args.test:
+        logger.info("Training AI models and then running in test mode...")
+        run_bot(
+            test_mode=True,  # Always use test mode
+            api_key=os.getenv('BINANCE_API_KEY'),
+            api_secret=os.getenv('BINANCE_API_SECRET'),
+            symbol=args.symbol,
+            leverage=args.leverage,
+            timeframe=args.timeframe,
+            strategy_name=args.strategy,
+            train_ai=True,  # Train AI models
+            start_date=args.start_date,
+            end_date=args.end_date
+        )
+    # Otherwise, run the bot normally
     else:
         run_bot(
             test_mode=args.test,
