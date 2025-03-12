@@ -15,6 +15,7 @@ from utils import setup_logger
 from binance_client import BinanceClient
 from telegram_notifier import TelegramNotifier
 from strategy import ScalpingStrategy, SwingStrategy, BreakoutStrategy
+from ai_strategy import AIStrategy, AIScalpingStrategy, AISwingStrategy, AIBreakoutStrategy
 from backtest import Backtester
 
 # Load environment variables
@@ -37,7 +38,11 @@ def get_strategy_class(strategy_name):
     strategy_map = {
         'scalping': (ScalpingStrategy, config.SCALPING_TIMEFRAME),
         'swing': (SwingStrategy, config.SWING_TIMEFRAME),
-        'breakout': (BreakoutStrategy, config.BREAKOUT_TIMEFRAME)
+        'breakout': (BreakoutStrategy, config.BREAKOUT_TIMEFRAME),
+        'ai': (AIStrategy, config.SCALPING_TIMEFRAME),
+        'ai_scalping': (AIScalpingStrategy, config.SCALPING_TIMEFRAME),
+        'ai_swing': (AISwingStrategy, config.SWING_TIMEFRAME),
+        'ai_breakout': (AIBreakoutStrategy, config.BREAKOUT_TIMEFRAME)
     }
     
     if strategy_name not in strategy_map:
@@ -46,7 +51,7 @@ def get_strategy_class(strategy_name):
     return strategy_map[strategy_name]
 
 
-def run_bot(test_mode=False, api_key=None, api_secret=None, symbol=None, leverage=None, timeframe=None, strategy_name='scalping'):
+def run_bot(test_mode=False, api_key=None, api_secret=None, symbol=None, leverage=None, timeframe=None, strategy_name='scalping', train_ai=False, start_date=None, end_date=None):
     """
     Run the trading bot.
     
@@ -58,6 +63,9 @@ def run_bot(test_mode=False, api_key=None, api_secret=None, symbol=None, leverag
         leverage (int): Trading leverage
         timeframe (str): Trading timeframe
         strategy_name (str): Name of the strategy to use
+        train_ai (bool): Whether to train AI models before running
+        start_date (str): Start date for AI training (YYYY-MM-DD)
+        end_date (str): End date for AI training (YYYY-MM-DD)
     """
     telegram_notifier = None  # Initialize to None to avoid UnboundLocalError
     
@@ -95,6 +103,20 @@ def run_bot(test_mode=False, api_key=None, api_secret=None, symbol=None, leverag
         
         # Initialize strategy
         strategy = strategy_class(binance_client, telegram_notifier, symbol, timeframe, leverage)
+        
+        # Train AI models if requested and if it's an AI strategy
+        if train_ai and strategy_name.startswith('ai'):
+            logger.info(f"Training AI models for {strategy_name}...")
+            if hasattr(strategy, 'train_models'):
+                success = strategy.train_models(start_date=start_date, end_date=end_date)
+                if success:
+                    logger.info("AI models trained successfully.")
+                else:
+                    logger.error("Failed to train AI models.")
+                    if telegram_notifier:
+                        telegram_notifier.notify_error("Failed to train AI models.")
+            else:
+                logger.warning(f"Strategy {strategy_name} does not support training.")
         
         # Set leverage
         try:
@@ -188,21 +210,20 @@ def run_bot(test_mode=False, api_key=None, api_secret=None, symbol=None, leverag
                 logger.error(f"Error sending Telegram notification: {notify_error}")
 
 
-def run_backtest(symbol=None, timeframe=None, start_date=None, end_date=None, initial_balance=10000, strategy_name='scalping'):
+def run_backtest(symbol=None, timeframe=None, days=30, start_date=None, end_date=None, strategy_name='scalping'):
     """
     Run backtest.
     
     Args:
         symbol (str): Trading symbol
-        timeframe (str): Timeframe
+        timeframe (str): Trading timeframe
+        days (int): Number of days to backtest
         start_date (str): Start date (YYYY-MM-DD)
         end_date (str): End date (YYYY-MM-DD)
-        initial_balance (float): Initial balance
         strategy_name (str): Name of the strategy to use
     """
     try:
         logger.info("Starting backtest...")
-        logger.info(f"Strategy: {strategy_name.upper()}")
         
         # Get strategy class and default timeframe
         strategy_class, default_timeframe = get_strategy_class(strategy_name.lower())
@@ -210,62 +231,80 @@ def run_backtest(symbol=None, timeframe=None, start_date=None, end_date=None, in
         # Use provided timeframe or default for the strategy
         timeframe = timeframe or default_timeframe
         
+        # Check if it's an AI strategy
+        is_ai_strategy = strategy_name.startswith('ai')
+        
         # Initialize backtester
         backtester = Backtester(
             symbol=symbol,
             timeframe=timeframe,
             start_date=start_date,
             end_date=end_date,
-            strategy_class=strategy_class
+            strategy_class=strategy_class,
+            is_ai_strategy=is_ai_strategy
         )
         
         # Run backtest
-        results = backtester.run_backtest(initial_balance=initial_balance)
+        results = backtester.run_backtest()
         
-        # Plot results
-        backtester.plot_results(results)
+        if results:
+            # Plot results
+            backtester.plot_results(results)
+            
+            # Print summary
+            stats = results['stats']
+            logger.info("Backtest Summary:")
+            logger.info(f"Total Return: {stats['total_return']:.2f}%")
+            logger.info(f"Annual Return: {stats['annual_return']:.2f}%")
+            logger.info(f"Sharpe Ratio: {stats['sharpe_ratio']:.2f}")
+            logger.info(f"Max Drawdown: {stats['max_drawdown']:.2f}%")
+            logger.info(f"Win Rate: {stats['win_rate']:.2f}%")
+            logger.info(f"Profit Factor: {stats['profit_factor']:.2f}")
+            logger.info(f"Total Trades: {stats['total_trades']}")
+            
+            return results
         
-        logger.info("Backtest completed.")
-        
-        return results
-    
     except Exception as e:
         logger.error(f"Error running backtest: {e}")
-        raise
+        return None
 
 
 if __name__ == "__main__":
-    # Parse command line arguments
     parser = argparse.ArgumentParser(description="AI Trading Bot")
-    parser.add_argument("--backtest", action="store_true", help="Run backtest")
+    
     parser.add_argument("--test", action="store_true", help="Run in test mode (no real trades)")
-    parser.add_argument("--symbol", type=str, help="Trading symbol")
-    parser.add_argument("--timeframe", type=str, help="Timeframe")
-    parser.add_argument("--start-date", type=str, help="Start date for backtest (YYYY-MM-DD)")
-    parser.add_argument("--end-date", type=str, help="End date for backtest (YYYY-MM-DD)")
-    parser.add_argument("--initial-balance", type=float, default=10000, help="Initial balance for backtest")
-    parser.add_argument("--leverage", type=int, help="Leverage")
+    parser.add_argument("--symbol", type=str, help="Trading symbol (e.g., BTCUSDT)")
+    parser.add_argument("--leverage", type=int, help="Trading leverage")
+    parser.add_argument("--timeframe", type=str, help="Trading timeframe (e.g., 1m, 5m, 15m, 1h)")
     parser.add_argument(
         "--strategy",
         type=str,
-        choices=['scalping', 'swing', 'breakout'],
+        choices=['scalping', 'swing', 'breakout', 'ai', 'ai_scalping', 'ai_swing', 'ai_breakout'],
         default='scalping',
         help="Trading strategy to use"
     )
-
+    parser.add_argument("--train-ai", action="store_true", help="Train AI models before running")
+    parser.add_argument("--start-date", type=str, help="Start date for AI training (YYYY-MM-DD)")
+    parser.add_argument("--end-date", type=str, help="End date for AI training (YYYY-MM-DD)")
+    
+    # Backtest arguments
+    parser.add_argument("--backtest", action="store_true", help="Run backtest")
+    parser.add_argument("--backtest-days", type=int, default=30, help="Number of days to backtest")
+    parser.add_argument("--backtest-start", type=str, help="Start date for backtest (YYYY-MM-DD)")
+    parser.add_argument("--backtest-end", type=str, help="End date for backtest (YYYY-MM-DD)")
+    
     args = parser.parse_args()
+    
     if args.backtest:
-        # Run backtest
         run_backtest(
             symbol=args.symbol,
             timeframe=args.timeframe,
-            start_date=args.start_date,
-            end_date=args.end_date,
-            initial_balance=args.initial_balance,
+            days=args.backtest_days,
+            start_date=args.backtest_start,
+            end_date=args.backtest_end,
             strategy_name=args.strategy
         )
     else:
-        # Run bot
         run_bot(
             test_mode=args.test,
             api_key=os.getenv('BINANCE_API_KEY'),
@@ -273,5 +312,8 @@ if __name__ == "__main__":
             symbol=args.symbol,
             leverage=args.leverage,
             timeframe=args.timeframe,
-            strategy_name=args.strategy
+            strategy_name=args.strategy,
+            train_ai=args.train_ai,
+            start_date=args.start_date,
+            end_date=args.end_date
         )

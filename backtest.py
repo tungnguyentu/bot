@@ -13,19 +13,21 @@ from dotenv import load_dotenv
 
 import config
 from indicators import (
-    calculate_rsi, 
-    calculate_vwap, 
-    calculate_atr, 
+    calculate_rsi,
+    calculate_vwap,
+    calculate_atr,
     detect_volume_spike,
     calculate_bollinger_bands,
-    calculate_macd
+    calculate_macd,
 )
+from strategy import BreakoutStrategy, ScalpingStrategy, SwingStrategy
+from ai_strategy import AIStrategy, AIScalpingStrategy, AISwingStrategy, AIBreakoutStrategy
 from utils import (
     calculate_take_profit_price,
     calculate_stop_loss_price,
     calculate_atr_stop_loss,
     setup_logger,
-    convert_to_dataframe
+    convert_to_dataframe,
 )
 
 # Load environment variables
@@ -39,51 +41,72 @@ class Backtester:
     """
     Backtester for the trading strategy.
     """
-    
-    def __init__(self, symbol=None, timeframe=None, start_date=None, end_date=None, strategy_class=None):
+
+    def __init__(
+        self,
+        symbol=None,
+        timeframe=None,
+        start_date=None,
+        end_date=None,
+        strategy_class=None,
+        initial_balance=10000,
+        leverage=config.LEVERAGE,
+        transaction_fee=0.0004,
+        slippage=0.0002,
+        is_ai_strategy=False,
+    ):
         """
         Initialize the backtester.
         
         Args:
             symbol (str): Trading symbol
-            timeframe (str): Timeframe
+            timeframe (str): Trading timeframe
             start_date (str): Start date (YYYY-MM-DD)
             end_date (str): End date (YYYY-MM-DD)
-            strategy_class (class): Strategy class to use
+            strategy_class (class): Strategy class
+            initial_balance (float): Initial balance
+            leverage (int): Leverage
+            transaction_fee (float): Transaction fee
+            slippage (float): Slippage
+            is_ai_strategy (bool): Whether the strategy is an AI strategy
         """
         self.symbol = symbol or config.SYMBOL
         self.timeframe = timeframe or config.TIMEFRAME
-        self.start_date = start_date or config.BACKTEST_START_DATE
-        self.end_date = end_date or config.BACKTEST_END_DATE
+        self.start_date = start_date
+        self.end_date = end_date
         self.strategy_class = strategy_class
+        self.initial_balance = initial_balance
+        self.leverage = leverage
+        self.transaction_fee = transaction_fee
+        self.slippage = slippage
+        self.is_ai_strategy = is_ai_strategy
         
-        # Initialize exchange for historical data
+        # Initialize exchange
         self.exchange = ccxt.binance({
             'enableRateLimit': True,
             'options': {
                 'defaultType': 'future',
-                'adjustForTimeDifference': True
             }
         })
         
         # Initialize strategy
-        self.strategy = self.strategy_class(
-            binance_client=None,  # Not needed for backtesting
-            telegram_notifier=None,  # Not needed for backtesting
-            symbol=self.symbol,
-            timeframe=self.timeframe,
-            leverage=config.LEVERAGE
-        )
+        self.strategy = None
+        
+        # Initialize data
+        self.data = None
         
         # Initialize results
-        self.data = None
-        self.trades = []
-        self.equity_curve = []
-        self.active_positions = {}
+        self.results = {
+            'balance': [],
+            'equity': [],
+            'trades': [],
+            'positions': [],
+            'returns': [],
+            'drawdowns': [],
+        }
         
-        logger.info(f"Backtester initialized for {self.symbol} ({self.timeframe}) from {self.start_date} to {self.end_date}.")
-        logger.info(f"Strategy: {self.strategy_class.__name__}")
-    
+        logger.info(f"Backtester initialized for {self.symbol} ({self.timeframe})")
+        
     def fetch_historical_data(self):
         """
         Fetch historical data for backtesting.
@@ -92,264 +115,569 @@ class Backtester:
             pd.DataFrame: Historical data
         """
         try:
-            # Convert dates to timestamps
-            start_timestamp = int(datetime.strptime(self.start_date, '%Y-%m-%d').timestamp() * 1000)
-            end_timestamp = int(datetime.strptime(self.end_date, '%Y-%m-%d').timestamp() * 1000)
+            # Calculate start and end timestamps
+            if self.end_date:
+                end_date = datetime.strptime(self.end_date, '%Y-%m-%d')
+            else:
+                end_date = datetime.now()
+            
+            if self.start_date:
+                start_date = datetime.strptime(self.start_date, '%Y-%m-%d')
+            else:
+                # Default to 30 days before end date
+                start_date = end_date - timedelta(days=30)
+            
+            # Convert to milliseconds timestamp
+            start_timestamp = int(start_date.timestamp() * 1000)
+            end_timestamp = int(end_date.timestamp() * 1000)
+            
+            logger.info(f"Fetching historical data for {self.symbol} from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
             
             # Fetch historical data
-            logger.info(f"Fetching historical data for {self.symbol} ({self.timeframe})...")
-            
-            # Initialize empty list for all klines
-            all_klines = []
-            
-            # Fetch data in chunks to avoid rate limits
-            current_timestamp = start_timestamp
-            while current_timestamp < end_timestamp:
-                # Fetch klines
-                klines = self.exchange.fetch_ohlcv(
-                    symbol=self.symbol,
-                    timeframe=self.timeframe,
-                    since=current_timestamp,
-                    limit=1000
-                )
-                
-                if not klines:
-                    break
-                
-                # Add klines to list
-                all_klines.extend(klines)
-                
-                # Update current timestamp
-                current_timestamp = klines[-1][0] + 1
-                
-                # Sleep to avoid rate limits
-                self.exchange.sleep(self.exchange.rateLimit / 1000)
+            ohlcv = self.exchange.fetch_ohlcv(
+                symbol=self.symbol,
+                timeframe=self.timeframe,
+                since=start_timestamp,
+                limit=1000
+            )
             
             # Convert to DataFrame
-            df = convert_to_dataframe(all_klines)
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
             
             # Filter by date range
-            df = df[(df.index >= self.start_date) & (df.index <= self.end_date)]
+            df = df[(df.index >= start_date) & (df.index <= end_date)]
             
-            logger.info(f"Fetched {len(df)} candles for {self.symbol} ({self.timeframe}).")
+            logger.info(f"Fetched {len(df)} candles for {self.symbol}")
             
-            self.data = df
             return df
         
         except Exception as e:
             logger.error(f"Error fetching historical data: {e}")
             raise
     
-    def prepare_data(self):
+    def prepare_data(self, data):
         """
-        Prepare data for backtesting by calculating indicators.
+        Prepare data for backtesting.
         
+        Args:
+            data (pd.DataFrame): Historical data
+            
         Returns:
             pd.DataFrame: Prepared data
         """
-        if self.data is None:
-            self.fetch_historical_data()
-        
         try:
-            # Calculate common indicators
-            self.data['atr'] = calculate_atr(self.data, period=config.ATR_PERIOD)
+            # Add indicators
+            df = data.copy()
             
-            # Calculate strategy-specific indicators
-            if isinstance(self.strategy, ScalpingStrategy):
-                self.data['rsi'] = calculate_rsi(self.data, period=config.RSI_PERIOD)
-                self.data['vwap'] = calculate_vwap(self.data, period=config.VWAP_PERIOD)
-                self.data['volume_spike'] = detect_volume_spike(self.data, threshold=config.VOLUME_THRESHOLD)
-                self.data['trend'] = np.where(self.data['close'] > self.data['vwap'], 'bullish', 'bearish')
-                
-                # Generate signals
-                self.data['long_signal'] = (
-                    (self.data['trend'] == 'bullish') &
-                    (self.data['rsi'] < config.RSI_OVERSOLD)
-                )
-                
-                self.data['short_signal'] = (
-                    (self.data['trend'] == 'bearish') &
-                    (self.data['rsi'] > config.RSI_OVERBOUGHT)
-                )
+            # Add RSI
+            df['rsi'] = calculate_rsi(df['close'])
             
-            elif isinstance(self.strategy, SwingStrategy):
-                # Calculate MACD
-                macd_data = calculate_macd(
-                    self.data,
-                    fast_period=config.MACD_FAST_PERIOD,
-                    slow_period=config.MACD_SLOW_PERIOD,
-                    signal_period=config.MACD_SIGNAL_PERIOD
-                )
-                self.data['macd'] = macd_data['macd']
-                self.data['macd_signal'] = macd_data['signal']
-                
-                # Calculate Bollinger Bands
-                bb_data = calculate_bollinger_bands(
-                    self.data,
-                    period=config.BB_PERIOD,
-                    std=config.BB_STD
-                )
-                self.data['bb_upper'] = bb_data['upper_band']
-                self.data['bb_lower'] = bb_data['lower_band']
-                
-                # Generate signals
-                self.data['long_signal'] = (
-                    (self.data['macd'] > self.data['macd_signal']) &
-                    (self.data['close'] < self.data['bb_lower'])
-                )
-                
-                self.data['short_signal'] = (
-                    (self.data['macd'] < self.data['macd_signal']) &
-                    (self.data['close'] > self.data['bb_upper'])
-                )
+            # Add VWAP
+            df['vwap'] = calculate_vwap(df)
             
-            elif isinstance(self.strategy, BreakoutStrategy):
-                # Calculate recent high/low
-                self.data['recent_high'] = self.data['high'].rolling(window=config.BREAKOUT_PERIOD).max()
-                self.data['recent_low'] = self.data['low'].rolling(window=config.BREAKOUT_PERIOD).min()
-                self.data['volume_spike'] = detect_volume_spike(self.data, threshold=config.VOLUME_THRESHOLD)
-                
-                # Generate signals
-                self.data['long_signal'] = (
-                    (self.data['close'] > self.data['recent_high'].shift(1)) &
-                    self.data['volume_spike'] &
-                    (self.data['close'] > self.data['open'])
-                )
-                
-                self.data['short_signal'] = (
-                    (self.data['close'] < self.data['recent_low'].shift(1)) &
-                    self.data['volume_spike'] &
-                    (self.data['close'] < self.data['open'])
-                )
+            # Add ATR
+            df['atr'] = calculate_atr(df)
             
-            # Count signals
-            long_signals = self.data['long_signal'].sum()
-            short_signals = self.data['short_signal'].sum()
+            # Add volume spike
+            df['volume_spike'] = detect_volume_spike(df['volume'])
             
-            logger.info(f"Data prepared for backtesting.")
-            logger.info(f"Signal counts - Long: {long_signals}, Short: {short_signals}")
+            # Add Bollinger Bands
+            df['bb_upper'], df['bb_middle'], df['bb_lower'] = calculate_bollinger_bands(df['close'])
             
-            return self.data
+            # Add MACD
+            df['macd'], df['macd_signal'], df['macd_hist'] = calculate_macd(df['close'])
+            
+            # Add returns
+            df['return'] = df['close'].pct_change()
+            
+            # Add target for AI models
+            df['return_1'] = df['close'].pct_change(1).shift(-1)  # Next candle's return
+            df['return_5'] = df['close'].pct_change(5).shift(-5)  # 5 candles ahead return
+            df['return_10'] = df['close'].pct_change(10).shift(-10)  # 10 candles ahead return
+            
+            # Drop NaN values
+            df.dropna(inplace=True)
+            
+            return df
         
         except Exception as e:
             logger.error(f"Error preparing data: {e}")
             raise
     
-    def run_backtest(self, initial_balance=10000):
+    def run_backtest(self):
         """
-        Run backtest on historical data.
+        Run backtest.
         
-        Args:
-            initial_balance (float): Initial balance
-            
         Returns:
             dict: Backtest results
         """
-        if self.data is None or 'long_signal' not in self.data.columns:
-            self.prepare_data()
-        
         try:
-            # Initialize backtest variables
-            balance = initial_balance
-            self.equity_curve = [{'timestamp': self.data.index[0], 'equity': balance}]
-            self.trades = []
-            self.active_positions = {}
+            # Fetch historical data
+            data = self.fetch_historical_data()
             
-            # Set strategy-specific parameters
-            if isinstance(self.strategy, ScalpingStrategy):
-                take_profit = config.SCALPING_TAKE_PROFIT / 100
-                stop_loss = config.SCALPING_STOP_LOSS / 100
-            elif isinstance(self.strategy, SwingStrategy):
-                take_profit = config.SWING_TAKE_PROFIT / 100
-                stop_loss = config.SWING_STOP_LOSS / 100
-            elif isinstance(self.strategy, BreakoutStrategy):
-                take_profit = config.BREAKOUT_TAKE_PROFIT / 100
-                stop_loss = config.BREAKOUT_STOP_LOSS / 100
+            # Prepare data
+            self.data = self.prepare_data(data)
+            
+            # Initialize strategy
+            if self.strategy_class:
+                # Create a mock binance client for the strategy
+                mock_client = type('MockBinanceClient', (), {
+                    'get_klines': lambda symbol, timeframe, limit: self.data.iloc[-limit:].copy() if limit else self.data.copy(),
+                    'create_market_order': lambda symbol, side, amount: {'orderId': 'backtest'},
+                    'get_position': lambda symbol: None,
+                    'get_balance': lambda: {'total': self.initial_balance},
+                    'set_leverage': lambda symbol, leverage: None
+                })
+                
+                # Initialize strategy
+                self.strategy = self.strategy_class(mock_client, None, self.symbol, self.timeframe, self.leverage)
+                
+                # If it's an AI strategy, we need to train the models
+                if self.is_ai_strategy and hasattr(self.strategy, 'train_models'):
+                    logger.info("Training AI models for backtesting...")
+                    self.strategy.train_models()
+            else:
+                logger.error("No strategy class provided")
+                return None
+            
+            # Initialize backtest variables
+            balance = self.initial_balance
+            equity = self.initial_balance
+            positions = {}
+            trades = []
+            
+            # Run backtest
+            logger.info(f"Running backtest for {self.symbol} ({self.timeframe})")
             
             # Iterate through data
-            for i in range(1, len(self.data)):
-                current_row = self.data.iloc[i]
-                previous_row = self.data.iloc[i-1]
+            for i in range(len(self.data)):
+                # Get current candle
+                current_data = self.data.iloc[:i+1]
+                current_candle = current_data.iloc[-1]
+                current_price = current_candle['close']
+                current_time = current_data.index[-1]
                 
-                # Check for entry signals
-                if len(self.active_positions) < self.strategy.max_active_positions:
+                # Update mock client data
+                mock_client.get_klines = lambda symbol, timeframe, limit: current_data.iloc[-limit:].copy() if limit else current_data.copy()
+                
+                # Analyze market
+                analysis = None
+                try:
+                    analysis = self.strategy.analyze_market()
+                except Exception as e:
+                    logger.error(f"Error analyzing market: {e}")
+                    continue
+                
+                # Execute signals
+                if analysis:
                     # Check for long signal
-                    if previous_row['long_signal']:
-                        self._open_long_position(current_row, balance, take_profit, stop_loss)
+                    if analysis.get('long_signal', False) and len(positions) < self.strategy.max_active_positions:
+                        # Calculate position size
+                        position_size = self.strategy.position_size
+                        
+                        # Adjust position size for AI strategies
+                        if self.is_ai_strategy and 'adjusted_position_size' in analysis:
+                            position_size = analysis['adjusted_position_size']
+                        
+                        # Calculate entry price with slippage
+                        entry_price = current_price * (1 + self.slippage)
+                        
+                        # Calculate take profit and stop loss
+                        take_profit_percent = self.strategy.take_profit_percent
+                        stop_loss_percent = self.strategy.stop_loss_percent
+                        
+                        # Adjust take profit and stop loss for AI strategies
+                        if self.is_ai_strategy:
+                            if 'adjusted_take_profit' in analysis:
+                                take_profit_percent = analysis['adjusted_take_profit']
+                            if 'adjusted_stop_loss' in analysis:
+                                stop_loss_percent = analysis['adjusted_stop_loss']
+                        
+                        take_profit_price = calculate_take_profit_price(entry_price, take_profit_percent, 'long')
+                        
+                        if self.strategy.use_atr_for_sl and 'atr' in current_candle:
+                            stop_loss_price = calculate_atr_stop_loss(
+                                entry_price, current_candle['atr'], self.strategy.atr_multiplier, 'long'
+                            )
+                        else:
+                            stop_loss_price = calculate_stop_loss_price(entry_price, stop_loss_percent, 'long')
+                        
+                        # Calculate cost and fees
+                        cost = position_size * entry_price / self.leverage
+                        fee = cost * self.transaction_fee
+                        
+                        # Check if enough balance
+                        if cost + fee <= balance:
+                            # Create position
+                            position_id = f"long_{self.symbol}_{i}"
+                            positions[position_id] = {
+                                'id': position_id,
+                                'symbol': self.symbol,
+                                'type': 'long',
+                                'entry_price': entry_price,
+                                'take_profit': take_profit_price,
+                                'stop_loss': stop_loss_price,
+                                'quantity': position_size,
+                                'entry_time': current_time,
+                                'cost': cost,
+                                'fee': fee
+                            }
+                            
+                            # Update balance
+                            balance -= (cost + fee)
+                            
+                            logger.info(f"Opened long position at {entry_price:.2f}")
                     
                     # Check for short signal
-                    elif previous_row['short_signal']:
-                        self._open_short_position(current_row, balance, take_profit, stop_loss)
+                    elif analysis.get('short_signal', False) and len(positions) < self.strategy.max_active_positions:
+                        # Calculate position size
+                        position_size = self.strategy.position_size
+                        
+                        # Adjust position size for AI strategies
+                        if self.is_ai_strategy and 'adjusted_position_size' in analysis:
+                            position_size = analysis['adjusted_position_size']
+                        
+                        # Calculate entry price with slippage
+                        entry_price = current_price * (1 - self.slippage)
+                        
+                        # Calculate take profit and stop loss
+                        take_profit_percent = self.strategy.take_profit_percent
+                        stop_loss_percent = self.strategy.stop_loss_percent
+                        
+                        # Adjust take profit and stop loss for AI strategies
+                        if self.is_ai_strategy:
+                            if 'adjusted_take_profit' in analysis:
+                                take_profit_percent = analysis['adjusted_take_profit']
+                            if 'adjusted_stop_loss' in analysis:
+                                stop_loss_percent = analysis['adjusted_stop_loss']
+                        
+                        take_profit_price = calculate_take_profit_price(entry_price, take_profit_percent, 'short')
+                        
+                        if self.strategy.use_atr_for_sl and 'atr' in current_candle:
+                            stop_loss_price = calculate_atr_stop_loss(
+                                entry_price, current_candle['atr'], self.strategy.atr_multiplier, 'short'
+                            )
+                        else:
+                            stop_loss_price = calculate_stop_loss_price(entry_price, stop_loss_percent, 'short')
+                        
+                        # Calculate cost and fees
+                        cost = position_size * entry_price / self.leverage
+                        fee = cost * self.transaction_fee
+                        
+                        # Check if enough balance
+                        if cost + fee <= balance:
+                            # Create position
+                            position_id = f"short_{self.symbol}_{i}"
+                            positions[position_id] = {
+                                'id': position_id,
+                                'symbol': self.symbol,
+                                'type': 'short',
+                                'entry_price': entry_price,
+                                'take_profit': take_profit_price,
+                                'stop_loss': stop_loss_price,
+                                'quantity': position_size,
+                                'entry_time': current_time,
+                                'cost': cost,
+                                'fee': fee
+                            }
+                            
+                            # Update balance
+                            balance -= (cost + fee)
+                            
+                            logger.info(f"Opened short position at {entry_price:.2f}")
                 
-                # Manage open positions
-                self._manage_positions(current_row)
-                
-                # Update equity curve
-                total_value = balance
-                for position in self.active_positions.values():
+                # Manage positions
+                for position_id in list(positions.keys()):
+                    position = positions[position_id]
+                    
+                    # Check if position should be closed
                     if position['type'] == 'long':
-                        total_value += (current_row['close'] - position['entry_price']) * position['quantity']
-                    else:  # short
-                        total_value += (position['entry_price'] - current_row['close']) * position['quantity']
+                        # Check take profit
+                        if current_price >= position['take_profit']:
+                            # Calculate profit
+                            profit = position['quantity'] * (current_price - position['entry_price'])
+                            
+                            # Calculate fee
+                            fee = position['quantity'] * current_price * self.transaction_fee / self.leverage
+                            
+                            # Update balance
+                            balance += (position['cost'] + profit - fee)
+                            
+                            # Add trade
+                            trades.append({
+                                'position_id': position_id,
+                                'symbol': position['symbol'],
+                                'type': position['type'],
+                                'entry_price': position['entry_price'],
+                                'exit_price': current_price,
+                                'quantity': position['quantity'],
+                                'entry_time': position['entry_time'],
+                                'exit_time': current_time,
+                                'profit': profit,
+                                'fee': position['fee'] + fee,
+                                'result': 'take_profit'
+                            })
+                            
+                            # Remove position
+                            del positions[position_id]
+                            
+                            logger.info(f"Closed long position at {current_price:.2f} (take profit)")
+                        
+                        # Check stop loss
+                        elif current_price <= position['stop_loss']:
+                            # Calculate profit (negative)
+                            profit = position['quantity'] * (current_price - position['entry_price'])
+                            
+                            # Calculate fee
+                            fee = position['quantity'] * current_price * self.transaction_fee / self.leverage
+                            
+                            # Update balance
+                            balance += (position['cost'] + profit - fee)
+                            
+                            # Add trade
+                            trades.append({
+                                'position_id': position_id,
+                                'symbol': position['symbol'],
+                                'type': position['type'],
+                                'entry_price': position['entry_price'],
+                                'exit_price': current_price,
+                                'quantity': position['quantity'],
+                                'entry_time': position['entry_time'],
+                                'exit_time': current_time,
+                                'profit': profit,
+                                'fee': position['fee'] + fee,
+                                'result': 'stop_loss'
+                            })
+                            
+                            # Remove position
+                            del positions[position_id]
+                            
+                            logger.info(f"Closed long position at {current_price:.2f} (stop loss)")
+                        
+                        # Check trailing stop
+                        elif self.strategy.use_trailing_stop:
+                            # Calculate price movement
+                            price_movement = (current_price - position['entry_price']) / position['entry_price']
+                            
+                            # Check if trailing stop should be activated
+                            if price_movement >= self.strategy.trailing_stop_activation:
+                                # Calculate new stop loss
+                                new_stop_loss = max(
+                                    position['stop_loss'],
+                                    current_price * (1 - self.strategy.trailing_stop_callback)
+                                )
+                                
+                                # Update stop loss if it has changed
+                                if new_stop_loss > position['stop_loss']:
+                                    position['stop_loss'] = new_stop_loss
+                    
+                    elif position['type'] == 'short':
+                        # Check take profit
+                        if current_price <= position['take_profit']:
+                            # Calculate profit
+                            profit = position['quantity'] * (position['entry_price'] - current_price)
+                            
+                            # Calculate fee
+                            fee = position['quantity'] * current_price * self.transaction_fee / self.leverage
+                            
+                            # Update balance
+                            balance += (position['cost'] + profit - fee)
+                            
+                            # Add trade
+                            trades.append({
+                                'position_id': position_id,
+                                'symbol': position['symbol'],
+                                'type': position['type'],
+                                'entry_price': position['entry_price'],
+                                'exit_price': current_price,
+                                'quantity': position['quantity'],
+                                'entry_time': position['entry_time'],
+                                'exit_time': current_time,
+                                'profit': profit,
+                                'fee': position['fee'] + fee,
+                                'result': 'take_profit'
+                            })
+                            
+                            # Remove position
+                            del positions[position_id]
+                            
+                            logger.info(f"Closed short position at {current_price:.2f} (take profit)")
+                        
+                        # Check stop loss
+                        elif current_price >= position['stop_loss']:
+                            # Calculate profit (negative)
+                            profit = position['quantity'] * (position['entry_price'] - current_price)
+                            
+                            # Calculate fee
+                            fee = position['quantity'] * current_price * self.transaction_fee / self.leverage
+                            
+                            # Update balance
+                            balance += (position['cost'] + profit - fee)
+                            
+                            # Add trade
+                            trades.append({
+                                'position_id': position_id,
+                                'symbol': position['symbol'],
+                                'type': position['type'],
+                                'entry_price': position['entry_price'],
+                                'exit_price': current_price,
+                                'quantity': position['quantity'],
+                                'entry_time': position['entry_time'],
+                                'exit_time': current_time,
+                                'profit': profit,
+                                'fee': position['fee'] + fee,
+                                'result': 'stop_loss'
+                            })
+                            
+                            # Remove position
+                            del positions[position_id]
+                            
+                            logger.info(f"Closed short position at {current_price:.2f} (stop loss)")
+                        
+                        # Check trailing stop
+                        elif self.strategy.use_trailing_stop:
+                            # Calculate price movement
+                            price_movement = (position['entry_price'] - current_price) / position['entry_price']
+                            
+                            # Check if trailing stop should be activated
+                            if price_movement >= self.strategy.trailing_stop_activation:
+                                # Calculate new stop loss
+                                new_stop_loss = min(
+                                    position['stop_loss'],
+                                    current_price * (1 + self.strategy.trailing_stop_callback)
+                                )
+                                
+                                # Update stop loss if it has changed
+                                if new_stop_loss < position['stop_loss']:
+                                    position['stop_loss'] = new_stop_loss
                 
-                self.equity_curve.append({
-                    'timestamp': current_row.name,
-                    'equity': total_value
-                })
+                # Calculate equity
+                equity = balance
+                for position_id, position in positions.items():
+                    if position['type'] == 'long':
+                        equity += position['cost'] + position['quantity'] * (current_price - position['entry_price'])
+                    elif position['type'] == 'short':
+                        equity += position['cost'] + position['quantity'] * (position['entry_price'] - current_price)
+                
+                # Store results
+                self.results['balance'].append(balance)
+                self.results['equity'].append(equity)
+                self.results['positions'].append(len(positions))
             
-            # Close any remaining positions at the end
-            final_price = self.data.iloc[-1]['close']
-            for position_id in list(self.active_positions.keys()):
-                self._close_position(position_id, 'end_of_backtest', final_price)
+            # Close any remaining positions at the last price
+            last_price = self.data.iloc[-1]['close']
+            last_time = self.data.index[-1]
             
-            # Calculate results
-            results = self._calculate_results(initial_balance)
+            for position_id, position in positions.items():
+                if position['type'] == 'long':
+                    # Calculate profit
+                    profit = position['quantity'] * (last_price - position['entry_price'])
+                    
+                    # Calculate fee
+                    fee = position['quantity'] * last_price * self.transaction_fee / self.leverage
+                    
+                    # Update balance
+                    balance += (position['cost'] + profit - fee)
+                    
+                    # Add trade
+                    trades.append({
+                        'position_id': position_id,
+                        'symbol': position['symbol'],
+                        'type': position['type'],
+                        'entry_price': position['entry_price'],
+                        'exit_price': last_price,
+                        'quantity': position['quantity'],
+                        'entry_time': position['entry_time'],
+                        'exit_time': last_time,
+                        'profit': profit,
+                        'fee': position['fee'] + fee,
+                        'result': 'end_of_backtest'
+                    })
+                    
+                    logger.info(f"Closed long position at {last_price:.2f} (end of backtest)")
+                
+                elif position['type'] == 'short':
+                    # Calculate profit
+                    profit = position['quantity'] * (position['entry_price'] - last_price)
+                    
+                    # Calculate fee
+                    fee = position['quantity'] * last_price * self.transaction_fee / self.leverage
+                    
+                    # Update balance
+                    balance += (position['cost'] + profit - fee)
+                    
+                    # Add trade
+                    trades.append({
+                        'position_id': position_id,
+                        'symbol': position['symbol'],
+                        'type': position['type'],
+                        'entry_price': position['entry_price'],
+                        'exit_price': last_price,
+                        'quantity': position['quantity'],
+                        'entry_time': position['entry_time'],
+                        'exit_time': last_time,
+                        'profit': profit,
+                        'fee': position['fee'] + fee,
+                        'result': 'end_of_backtest'
+                    })
+                    
+                    logger.info(f"Closed short position at {last_price:.2f} (end of backtest)")
             
-            return results
+            # Calculate final equity
+            equity = balance
+            
+            # Store final results
+            self.results['balance'].append(balance)
+            self.results['equity'].append(equity)
+            self.results['positions'].append(0)
+            self.results['trades'] = trades
+            
+            # Calculate returns
+            self.results['returns'] = [0]
+            for i in range(1, len(self.results['equity'])):
+                self.results['returns'].append(
+                    (self.results['equity'][i] - self.results['equity'][i-1]) / self.results['equity'][i-1]
+                )
+            
+            # Calculate drawdowns
+            self.results['drawdowns'] = [0]
+            peak = self.results['equity'][0]
+            for i in range(1, len(self.results['equity'])):
+                if self.results['equity'][i] > peak:
+                    peak = self.results['equity'][i]
+                    self.results['drawdowns'].append(0)
+                else:
+                    self.results['drawdowns'].append((peak - self.results['equity'][i]) / peak)
+            
+            # Calculate statistics
+            stats = self.calculate_statistics()
+            
+            logger.info(f"Backtest completed for {self.symbol} ({self.timeframe})")
+            logger.info(f"Initial balance: ${self.initial_balance:.2f}")
+            logger.info(f"Final balance: ${balance:.2f}")
+            logger.info(f"Total profit: ${balance - self.initial_balance:.2f}")
+            logger.info(f"Return: {(balance / self.initial_balance - 1) * 100:.2f}%")
+            logger.info(f"Number of trades: {len(trades)}")
+            
+            return {
+                'results': self.results,
+                'stats': stats,
+                'data': self.data
+            }
         
         except Exception as e:
             logger.error(f"Error running backtest: {e}")
             raise
-    
-    def _open_long_position(self, current_row, balance, take_profit, stop_loss):
-        """
-        Open a long position.
-        """
-        # ... existing code ...
-    
-    def _open_short_position(self, current_row, balance, take_profit, stop_loss):
-        """
-        Open a short position.
-        """
-        # ... existing code ...
-    
-    def _manage_positions(self, current_row):
-        """
-        Manage open positions.
-        """
-        # ... existing code ...
-    
-    def _close_position(self, position_id, reason, exit_price):
-        """
-        Close a position.
-        """
-        # ... existing code ...
-    
-    def _calculate_results(self, initial_balance):
-        """
-        Calculate backtest results.
-        """
-        # ... existing code ...
-    
-    def plot_results(self, results):
-        """
-        Plot backtest results.
-        """
-        # ... existing code ...
+
+    def calculate_statistics(self):
+        # Implementation of calculate_statistics method
+        pass
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Run backtest
     backtester = Backtester()
-    results = backtester.run_backtest(initial_balance=10000)
-    backtester.plot_results(results) 
+    results = backtester.run_backtest()
+    backtester.plot_results(results)

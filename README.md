@@ -8,12 +8,20 @@ An advanced cryptocurrency trading bot that uses AI-powered technical analysis t
   - **Scalping Strategy (5m)**: Short-term trades based on RSI and VWAP
   - **Swing Strategy (1h)**: Medium-term trades using MACD and Bollinger Bands
   - **Breakout Strategy (15m)**: Trend-following trades based on price breakouts and volume
+  - **AI-Powered Strategies**: Machine learning enhanced versions of all strategies
 - Real-time market analysis and automated trading
 - Risk management with take profit, stop loss, and trailing stop
 - Telegram notifications for trades and system status
 - Comprehensive backtesting framework
 - Support for multiple trading pairs
 - Configurable leverage and position sizing
+- AI-powered features:
+  - Machine learning models (LSTM, XGBoost, Random Forest)
+  - Reinforcement learning for adaptive trading
+  - Ensemble model combining multiple algorithms
+  - Sentiment analysis integration
+  - Dynamic position sizing based on confidence
+  - Adaptive risk management
 
 ## Trading Strategies
 
@@ -46,6 +54,19 @@ An advanced cryptocurrency trading bot that uses AI-powered technical analysis t
 - **Risk Settings**:
   - Take Profit: 1.5%
   - Stop Loss: 0.8%
+
+### 4. AI-Powered Strategies
+- **AI Scalping Strategy**: Enhanced scalping with machine learning
+- **AI Swing Strategy**: Enhanced swing trading with machine learning
+- **AI Breakout Strategy**: Enhanced breakout detection with machine learning
+- **Features**:
+  - Predictive price movement using LSTM neural networks
+  - Pattern recognition with XGBoost and Random Forest
+  - Reinforcement learning for adaptive trading decisions
+  - Ensemble model combining multiple algorithms
+  - Sentiment analysis from news and social media
+  - Dynamic position sizing based on prediction confidence
+  - Volatility-adjusted risk parameters
 
 ## Installation
 
@@ -83,6 +104,7 @@ The bot's behavior can be customized through the `config.py` file:
 - Risk management settings
 - Notification preferences
 - Backtesting parameters
+- AI model parameters
 
 ## Usage
 
@@ -99,12 +121,24 @@ python main.py --symbol BTCUSDT --strategy swing
 
 # Run with Breakout Strategy
 python main.py --symbol BTCUSDT --strategy breakout
+
+# Run with AI Scalping Strategy
+python main.py --symbol BTCUSDT --strategy ai_scalping
+
+# Run with AI Swing Strategy
+python main.py --symbol BTCUSDT --strategy ai_swing
+
+# Run with AI Breakout Strategy
+python main.py --symbol BTCUSDT --strategy ai_breakout
 ```
 
 Additional options:
 - `--test`: Run in test mode (no real trades)
 - `--timeframe`: Override default strategy timeframe
 - `--leverage`: Set custom leverage
+- `--train-ai`: Train AI models before running
+- `--start-date`: Start date for AI training (YYYY-MM-DD)
+- `--end-date`: End date for AI training (YYYY-MM-DD)
 
 ### Backtesting
 
@@ -112,18 +146,38 @@ Test strategies on historical data:
 
 ```bash
 # Backtest Scalping Strategy
-python main.py --backtest --symbol BTCUSDT --strategy scalping --start-date 2023-01-01 --end-date 2023-06-01
+python main.py --backtest --symbol BTCUSDT --strategy scalping --backtest-start 2023-01-01 --backtest-end 2023-06-01
 
 # Backtest Swing Strategy
-python main.py --backtest --symbol BTCUSDT --strategy swing --start-date 2023-01-01 --end-date 2023-06-01
+python main.py --backtest --symbol BTCUSDT --strategy swing --backtest-start 2023-01-01 --backtest-end 2023-06-01
 
 # Backtest Breakout Strategy
-python main.py --backtest --symbol BTCUSDT --strategy breakout --start-date 2023-01-01 --end-date 2023-06-01
+python main.py --backtest --symbol BTCUSDT --strategy breakout --backtest-start 2023-01-01 --backtest-end 2023-06-01
+
+# Backtest AI Strategies
+python main.py --backtest --symbol BTCUSDT --strategy ai_scalping --backtest-start 2023-01-01 --backtest-end 2023-06-01
 ```
 
 Additional backtest options:
-- `--initial-balance`: Set initial balance (default: 10000 USDT)
+- `--backtest-days`: Number of days to backtest (default: 30)
 - `--timeframe`: Override default strategy timeframe
+
+## AI Model Training
+
+The AI-powered strategies require training before use:
+
+```bash
+# Train AI Scalping Strategy
+python main.py --symbol BTCUSDT --strategy ai_scalping --train-ai --start-date 2022-01-01 --end-date 2023-01-01
+
+# Train AI Swing Strategy
+python main.py --symbol BTCUSDT --strategy ai_swing --train-ai --start-date 2022-01-01 --end-date 2023-01-01
+
+# Train AI Breakout Strategy
+python main.py --symbol BTCUSDT --strategy ai_breakout --train-ai --start-date 2022-01-01 --end-date 2023-01-01
+```
+
+The trained models are saved in the `models/` directory and automatically loaded when running the bot.
 
 ## Backtest Results
 
@@ -139,6 +193,7 @@ The bot generates detailed backtest reports and visualizations:
   - Profit factor
   - Maximum drawdown
   - Risk-adjusted return
+  - AI model accuracy metrics
 
 Results are saved in the `plots/` directory with strategy-specific filenames.
 
@@ -150,6 +205,7 @@ This bot is for educational purposes only. Cryptocurrency trading carries signif
 - Potential for significant losses
 - Technical failures
 - Market manipulation
+- AI model limitations and biases
 
 Always start with small amounts and test thoroughly in test mode before live trading.
 
@@ -160,6 +216,7 @@ Contributions are welcome! Please feel free to submit pull requests or open issu
 - Bug fixes
 - New features
 - Strategy improvements
+- AI model enhancements
 - Documentation updates
 
 ## License
