@@ -285,7 +285,7 @@ def run_backtest(symbol=None, timeframe=None, days=30, start_date=None, end_date
         # Run backtest
         results = backtester.run_backtest()
         
-        if results:
+        if results and 'stats' in results and 'results' in results:
             # Plot results
             backtester.plot_results(results)
             
@@ -301,9 +301,14 @@ def run_backtest(symbol=None, timeframe=None, days=30, start_date=None, end_date
             logger.info(f"Total Trades: {stats['total_trades']}")
             
             return results
+        else:
+            logger.error("Backtest did not produce valid results")
+            return None
         
     except Exception as e:
         logger.error(f"Error running backtest: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return None
 
 
