@@ -4,7 +4,6 @@ import os
 import logging
 import random
 from collections import deque
-from tqdm import tqdm
 
 # Import deep learning libraries if available, otherwise warn user
 try:
@@ -195,9 +194,8 @@ class RLTrader:
         losses = []
 
         # Training loop
-        for episode in tqdm(
-            range(self.episodes), desc=f"Training RL model for {symbol}"
-        ):
+        logger.info(f"Starting training for {self.episodes} episodes")
+        for episode in range(self.episodes):
             # Reset environment for new episode
             state = env.reset()
             state = np.reshape(state, [1, self.state_size])
@@ -245,7 +243,8 @@ class RLTrader:
                     else np.mean(losses) if losses else 0
                 )
                 logger.info(
-                    f"Episode: {episode}/{self.episodes}, Avg Reward: {avg_reward:.2f}, Avg Loss: {avg_loss:.6f}, Epsilon: {self.epsilon:.4f}"
+                    f"Episode: {episode}/{self.episodes} ({episode/self.episodes*100:.1f}%), "
+                    f"Avg Reward: {avg_reward:.2f}, Avg Loss: {avg_loss:.6f}, Epsilon: {self.epsilon:.4f}"
                 )
 
         logger.info(f"Training completed for {symbol}")
