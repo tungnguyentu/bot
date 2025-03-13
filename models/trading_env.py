@@ -9,16 +9,23 @@ class TradingEnvironment(gym.Env):
 
     def __init__(self, data, config, initial_state=None):
         super(TradingEnvironment, self).__init__()
-        self.data = data
+        self.data = data.copy()
         self.config = config
         self.initial_balance = config.initial_balance
         self.position_size = config.position_size_percent
         self.leverage = config.initial_leverage
         self.commission = 0.0004  # 0.04% per trade
         
+        # Drop NaN values from data to avoid issues
+        self.data = self.data.dropna()
+        
+        # Ensure data isn't empty after NaN removal
+        if len(self.data) == 0:
+            raise ValueError("No valid data after NaN removal")
+        
         # Current step in the data
         self.current_step = 0
-        self.max_steps = len(data) - 1
+        self.max_steps = len(self.data) - 1
         
         # Portfolio state
         self.balance = self.initial_balance
@@ -27,6 +34,7 @@ class TradingEnvironment(gym.Env):
         self.position_size_usd = 0
         self.realized_pnl = 0
         self.unrealized_pnl = 0
+        self.position_duration = 0
         
         # Track performance metrics
         self.trades = []
@@ -44,9 +52,9 @@ class TradingEnvironment(gym.Env):
         self.action_space = spaces.Discrete(4)
         
         # Features + account state
-        feature_count = len(config.features) + 4  # features + balance, position, unrealized_pnl, market_position
+        feature_count = len(config.features) + 4  # features + balance, position, unrealized_pnl, position_duration
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(feature_count,), dtype=np.float32)
+            low=-10.0, high=10.0, shape=(feature_count,), dtype=np.float32)  # Use bounded values to prevent NaNs
 
     def reset(self):
         # Reset environment to the start
@@ -57,6 +65,7 @@ class TradingEnvironment(gym.Env):
         self.position_size_usd = 0
         self.realized_pnl = 0
         self.unrealized_pnl = 0
+        self.position_duration = 0
         self.trades = []
         self.equity_curve = []
         
@@ -65,6 +74,8 @@ class TradingEnvironment(gym.Env):
     def step(self, action):
         # Move to the next step
         self.current_step += 1
+        if self.current_step >= len(self.data):
+            self.current_step = len(self.data) - 1
         
         # Check if we're done
         done = self.current_step >= self.max_steps
@@ -103,7 +114,7 @@ class TradingEnvironment(gym.Env):
             # Update balance and metrics
             self.balance += pnl
             self.realized_pnl += pnl
-            reward += pnl  # Reward is the PnL
+            reward += pnl / self.initial_balance  # Normalize reward to avoid too large values
             
             # Record trade
             self.trades.append({
@@ -135,7 +146,7 @@ class TradingEnvironment(gym.Env):
             # Subtract commission
             commission = self.position_size_usd * self.commission
             self.balance -= commission
-            reward -= commission  # Commission is a negative reward
+            reward -= commission / self.initial_balance  # Normalize reward
         
         # Action 3: Open short position
         elif action == 3 and self.position == 0:
@@ -150,7 +161,7 @@ class TradingEnvironment(gym.Env):
             # Subtract commission
             commission = self.position_size_usd * self.commission
             self.balance -= commission
-            reward -= commission  # Commission is a negative reward
+            reward -= commission / self.initial_balance  # Normalize reward
         
         # Update position duration
         if self.position != 0:
@@ -176,33 +187,51 @@ class TradingEnvironment(gym.Env):
 
     def _get_observation(self):
         """Get current observation from market data and account"""
-        # Get current market data features
-        features = self.data.iloc[self.current_step][self.config.features].values
-        
-        # Normalize price-based features by division with current close price
-        close_price = self.data['close'].iloc[self.current_step]
-        for i, feature in enumerate(self.config.features):
-            if feature in ['close', 'open', 'high', 'low', 'bollinger_upper', 'bollinger_middle', 'bollinger_lower', 'vwap']:
-                features[i] /= close_price
-        
-        # Add account state: normalized balance, position, unrealized_pnl, market_position
-        norm_balance = self.balance / self.initial_balance
-        norm_unrealized_pnl = self.unrealized_pnl / self.initial_balance
-        
-        # Market position features
-        if self.position != 0:
-            entry_price_ratio = self.position_price / close_price
-            position_duration = min(self.position_duration / 100, 1)  # Normalize
-        else:
-            entry_price_ratio = 1.0
-            position_duration = 0
-        
-        account_state = np.array([norm_balance, self.position, norm_unrealized_pnl, position_duration])
-        
-        # Concatenate market features and account state
-        obs = np.concatenate([features, account_state])
-        
-        return obs.astype(np.float32)
+        try:
+            # Get current market data features
+            features = self.data.iloc[self.current_step][self.config.features].values
+            
+            # Normalize price-based features by division with current close price
+            close_price = max(1e-8, self.data['close'].iloc[self.current_step])  # Avoid division by zero
+            for i, feature in enumerate(self.config.features):
+                if feature in ['close', 'open', 'high', 'low', 'bollinger_upper', 'bollinger_middle', 'bollinger_lower', 'vwap']:
+                    features[i] = features[i] / close_price
+            
+            # Clip feature values to prevent extreme values
+            features = np.clip(features, -10.0, 10.0)
+            
+            # Add account state: normalized balance, position, unrealized_pnl, position_duration
+            norm_balance = self.balance / self.initial_balance
+            norm_unrealized_pnl = self.unrealized_pnl / (self.initial_balance + 1e-8)  # Avoid division by zero
+            
+            # Normalize position duration
+            position_duration = min(self.position_duration / 100, 1.0)  # Normalize to [0, 1]
+            
+            account_state = np.array([
+                norm_balance,
+                float(self.position),  # Convert to float explicitly
+                norm_unrealized_pnl,
+                position_duration
+            ])
+            
+            # Clip account state values
+            account_state = np.clip(account_state, -10.0, 10.0)
+            
+            # Concatenate market features and account state
+            obs = np.concatenate([features, account_state])
+            
+            # Check for NaN values and replace them
+            if np.isnan(obs).any():
+                logger.warning(f"NaN values in observation, replacing with zeros")
+                obs = np.nan_to_num(obs, nan=0.0)
+            
+            return obs.astype(np.float32)
+            
+        except Exception as e:
+            logger.error(f"Error creating observation: {e}")
+            # Return a safe default observation
+            feature_count = len(self.config.features) + 4
+            return np.zeros(feature_count, dtype=np.float32)
 
     def render(self, mode='human'):
         """Render the current state of the environment"""
