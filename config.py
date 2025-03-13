@@ -1,82 +1,52 @@
-"""
-Configuration settings for the AI Trading Bot.
-"""
+import os
+from dotenv import load_dotenv
 
-# Trading settings
-SYMBOL = "BTCUSDT"  # Trading pair
-TIMEFRAME = "5m"    # 5-minute timeframe
-LEVERAGE = 20       # x20 leverage
-POSITION_SIZE = 0.1  # 10% of balance per trade
 
-# Strategy parameters - Scalping
-RSI_PERIOD = 14
-RSI_OVERBOUGHT = 60
-RSI_OVERSOLD = 40
-VWAP_PERIOD = 14
-ATR_PERIOD = 14
-VOLUME_THRESHOLD = 1.3
+class Config:
+    def __init__(self):
+        load_dotenv()
 
-# Strategy parameters - Swing Trading
-MACD_FAST_PERIOD = 12
-MACD_SLOW_PERIOD = 26
-MACD_SIGNAL_PERIOD = 9
-BB_PERIOD = 20
-BB_STD = 2.0
+        # API credentials
+        self.binance_api_key = os.getenv("BINANCE_API_KEY", "")
+        self.binance_api_secret = os.getenv("BINANCE_API_SECRET", "")
+        self.telegram_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        self.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# Strategy parameters - Breakout
-BREAKOUT_PERIOD = 20
-BREAKOUT_VOLUME_THRESHOLD = 1.3
+        # Trading parameters
+        self.max_open_positions = 3
+        self.initial_leverage = 20
+        self.max_daily_drawdown = 0.08  # 8%
 
-# Risk management
-TAKE_PROFIT_PERCENT = 0.5
-STOP_LOSS_PERCENT = 0.3
-USE_ATR_FOR_SL = True
-ATR_MULTIPLIER = 1.5
-USE_TRAILING_STOP = True
-TRAILING_STOP_ACTIVATION = 0.3
-TRAILING_STOP_CALLBACK = 0.1
+        # Risk management
+        self.stop_loss_atr_multiplier = 2.0
+        self.take_profit_atr_multiplier = 3.0
+        self.position_size_percent = 0.02  # 2% of balance per trade
 
-# Execution settings
-USE_MARKET_ORDERS = True
-MAX_ACTIVE_POSITIONS = 3
-ORDER_TIME_LIMIT = 5  # seconds
+        # Model parameters
+        self.model_dir = "models"
+        self.rl_model_name = "ppo_trading_model"
+        self.prediction_model_name = "xgb_prediction_model"
 
-# Notification settings
-ENABLE_TELEGRAM = True     # Enable Telegram notifications
-TELEGRAM_BOT_TOKEN = ''  # Your Telegram bot token
-TELEGRAM_CHAT_ID = ''  # Your Telegram chat ID
-NOTIFY_ON_TRADE_OPEN = True
-NOTIFY_ON_TRADE_CLOSE = True
-NOTIFY_ON_ERROR = True
+        # Features for the model
+        self.features = [
+            "close",
+            "volume",
+            "rsi",
+            "macd",
+            "macd_signal",
+            "macd_hist",
+            "bollinger_upper",
+            "bollinger_middle",
+            "bollinger_lower",
+            "atr",
+            "vwap",
+            "adx",
+            "obv",
+        ]
 
-# Backtesting settings
-BACKTEST_START_DATE = "2024-01-01"
-BACKTEST_END_DATE = "2024-03-11"
+        # Backtesting parameters
+        self.initial_balance = 10000  # USDT
 
-# API rate limits
-MAX_REQUESTS_PER_MINUTE = 1200
-MAX_ORDERS_PER_MINUTE = 50
-RATE_LIMIT_BUFFER = 0.8  # Use only 80% of available rate limit
-
-# Logging settings
-LOG_LEVEL = "INFO"
-SAVE_TRADE_HISTORY = True
-LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-
-# Backtest settings
-DEFAULT_START_DATE = "2023-01-01"
-DEFAULT_END_DATE = "2023-06-01"
-DEFAULT_INITIAL_BALANCE = 10000
-
-# Strategy timeframes
-SCALPING_TIMEFRAME = '5m'
-SWING_TIMEFRAME = '1h'
-BREAKOUT_TIMEFRAME = '15m'
-
-# Strategy-specific risk settings
-SCALPING_TAKE_PROFIT = 0.5      # 0.5%
-SCALPING_STOP_LOSS = 0.3        # 0.3%
-SWING_TAKE_PROFIT = 2.0         # 2.0%
-SWING_STOP_LOSS = 1.0           # 1.0%
-BREAKOUT_TAKE_PROFIT = 1.5      # 1.5%
-BREAKOUT_STOP_LOSS = 0.8        # 0.8% 
+        # Advanced settings
+        self.lookback_window = 100  # Number of candles to consider for features
+        self.retraining_interval = 168  # Retrain model every 168 hours (1 week)
