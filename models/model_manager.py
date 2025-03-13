@@ -270,10 +270,11 @@ class ModelManager:
             # Get observation
             obs = env.get_observation()
             
-            # Check for NaN values
-            if np.isnan(obs).any():
-                logger.warning("NaN values in observation, using default action")
-                return 0
+            # Check for NaN or infinite values in a safe way
+            for i in range(len(obs)):
+                if not np.isfinite(float(obs[i])):
+                    logger.warning(f"Non-finite value detected in observation, using default action")
+                    return 0
             
             # Get action from model
             action, _ = self.rl_model.predict(obs, deterministic=True)
@@ -281,5 +282,6 @@ class ModelManager:
             return action
             
         except Exception as e:
-            logger.error(f"Error getting trading action: {e}")
+            logger.error(f"Error getting trading action: {e}", exc_info=True)
             return 0  # Default to no action on error
+
