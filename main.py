@@ -1,379 +1,444 @@
-"""
-Main module for the AI Trading Bot.
-"""
-
-import os
-import time
 import logging
-import argparse
 from datetime import datetime
-from dotenv import load_dotenv
-import requests
+import time
+import argparse
+import os
+import pandas as pd
 
-import config
-from utils import setup_logger
-from binance_client import BinanceClient
-from telegram_notifier import TelegramNotifier
-from strategy import ScalpingStrategy, SwingStrategy, BreakoutStrategy
-from ai_strategy import AIStrategy, AIScalpingStrategy, AISwingStrategy, AIBreakoutStrategy
-from backtest import Backtester
+from config import Config
+from exchange.binance_futures import BinanceFutures
+from strategy.mean_reversion import MeanReversionStrategy
+from risk_management.risk_manager import RiskManager
+from notifications.telegram_notifier import TelegramNotifier
+from data.market_data import MarketData
+from simulation.test_mode import TestModeExchange
+from simulation.backtesting import BacktestEngine
+from ai.reinforcement_learning import RLTrader
+from tqdm import trange
 
-# Load environment variables
-load_dotenv()
+def countdown_timer(seconds):
+    for i in trange(seconds, desc="Waiting...", ncols=80):
+        time.sleep(1)
 
-# Initialize logger
-logger = setup_logger(config.LOG_LEVEL)
-
-
-def get_strategy_class(strategy_name):
-    """
-    Get the strategy class based on the strategy name.
-    
-    Args:
-        strategy_name (str): Name of the strategy
-        
-    Returns:
-        class: Strategy class
-    """
-    strategy_map = {
-        'scalping': (ScalpingStrategy, config.SCALPING_TIMEFRAME),
-        'swing': (SwingStrategy, config.SWING_TIMEFRAME),
-        'breakout': (BreakoutStrategy, config.BREAKOUT_TIMEFRAME),
-        'ai': (AIStrategy, config.SCALPING_TIMEFRAME),
-        'ai_scalping': (AIScalpingStrategy, config.SCALPING_TIMEFRAME),
-        'ai_swing': (AISwingStrategy, config.SWING_TIMEFRAME),
-        'ai_breakout': (AIBreakoutStrategy, config.BREAKOUT_TIMEFRAME)
-    }
-    
-    if strategy_name not in strategy_map:
-        raise ValueError(f"Invalid strategy: {strategy_name}. Available strategies: {', '.join(strategy_map.keys())}")
-    
-    return strategy_map[strategy_name]
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler(f"logs/trading_{datetime.now().strftime('%Y%m%d')}.log"),
+        logging.StreamHandler(),
+    ],
+)
+logger = logging.getLogger("BinanceBot")
 
 
-def run_bot(test_mode=False, api_key=None, api_secret=None, symbol=None, leverage=None, timeframe=None, strategy_name='scalping', train_ai=False, start_date=None, end_date=None):
-    """
-    Run the trading bot.
-    
-    Args:
-        test_mode (bool): Run in test mode (no real trades)
-        api_key (str): Binance API key
-        api_secret (str): Binance API secret
-        symbol (str): Trading symbol
-        leverage (int): Trading leverage
-        timeframe (str): Trading timeframe
-        strategy_name (str): Name of the strategy to use
-        train_ai (bool): Whether to train AI models before running
-        start_date (str): Start date for AI training (YYYY-MM-DD)
-        end_date (str): End date for AI training (YYYY-MM-DD)
-    """
-    telegram_notifier = None  # Initialize to None to avoid UnboundLocalError
-    
-    try:
-        # Set default values from config if not provided
-        symbol = symbol or config.SYMBOL
-        leverage = leverage or config.LEVERAGE
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="Binance Futures Trading Bot")
+    parser.add_argument(
+        "--symbols",
+        type=str,
+        help="Trading symbols (comma-separated, e.g., BTCUSDT,ETHUSDT)",
+    )
+    parser.add_argument(
+        "--leverage",
+        type=int,
+        help="Leverage to use for trading (e.g., 20)",
+    )
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Run in test mode (no real trades executed)",
+    )
+    parser.add_argument(
+        "--backtest",
+        action="store_true",
+        help="Run in backtest mode to evaluate strategy on historical data",
+    )
+    parser.add_argument(
+        "--train",
+        action="store_true",
+        help="Run in training mode to optimize strategy with reinforcement learning",
+    )
+    parser.add_argument(
+        "--start-date",
+        type=str,
+        help="Start date for backtesting (format: YYYY-MM-DD)",
+    )
+    parser.add_argument(
+        "--end-date",
+        type=str,
+        help="End date for backtesting (format: YYYY-MM-DD)",
+    )
+    parser.add_argument(
+        "--test-balance",
+        type=float,
+        default=1000.0,
+        help="Starting balance for test/backtest mode (default: 1000 USDT)",
+    )
+    parser.add_argument(
+        "--episodes",
+        type=int,
+        default=100,
+        help="Number of episodes for RL training (default: 100)",
+    )
+    return parser.parse_args()
+
+
+class TradingBot:
+    def __init__(self, cli_args=None):
+        self.config = Config(cli_args)
+        self.cli_args = cli_args
         
-        # Check if it's an AI strategy
-        is_ai_strategy = strategy_name.startswith('ai')
-        
-        # Log startup information
-        if test_mode:
-            logger.info(f"Starting AI Trading Bot in TEST MODE (no real trades)...")
-            if is_ai_strategy:
-                logger.info(f"Using AI strategy: {strategy_name.upper()}")
-                if train_ai:
-                    logger.info(f"AI models will be trained before running")
-        else:
-            logger.info(f"Starting AI Trading Bot in LIVE MODE...")
-        
-        # Get strategy class and default timeframe
-        strategy_class, default_timeframe = get_strategy_class(strategy_name.lower())
-        
-        # Use provided timeframe or default for the strategy
-        timeframe = timeframe or default_timeframe
-        
-        # Initialize Binance client
-        try:
-            binance_client = BinanceClient(
-                api_key=api_key,
-                api_secret=api_secret,
-                testnet=test_mode
-            )
-        except Exception as e:
-            logger.error(f"Failed to initialize Binance client: {e}")
-            if "Invalid API" in str(e):
-                logger.error("Invalid Binance API credentials. Please check your .env file.")
-                logger.error("For testnet, you need to generate API keys from https://testnet.binancefuture.com/")
-            elif "Connection" in str(e):
-                logger.error("Connection error. Please check your internet connection.")
-            return
-        
-        # Initialize Telegram notifier
-        try:
-            telegram_notifier = TelegramNotifier() if config.ENABLE_TELEGRAM else None
-        except Exception as e:
-            logger.error(f"Failed to initialize Telegram bot: {e}")
-            telegram_notifier = None
-        
-        # Initialize strategy
-        strategy = strategy_class(binance_client, telegram_notifier, symbol, timeframe, leverage)
-        
-        # Train AI models if requested and if it's an AI strategy
-        if train_ai and strategy_name.startswith('ai'):
-            logger.info(f"Training AI models for {strategy_name.upper()} strategy...")
-            if hasattr(strategy, 'train_models'):
-                # Log training parameters
-                logger.info(f"Training period: {start_date or 'default start'} to {end_date or 'default end'}")
-                
-                # Train models
-                success = strategy.train_models(start_date=start_date, end_date=end_date)
-                
-                if success:
-                    logger.info("AI models trained successfully.")
-                    if test_mode:
-                        logger.info("Continuing to run in TEST MODE with trained models.")
-                    else:
-                        logger.info("Continuing to run in LIVE MODE with trained models.")
-                else:
-                    logger.error("Failed to train AI models.")
-                    if telegram_notifier:
-                        telegram_notifier.notify_error("Failed to train AI models.")
-                    return  # Exit if training failed
-            else:
-                logger.warning(f"Strategy {strategy_name} does not support training.")
-        
-        # Set leverage
-        try:
-            binance_client.set_leverage(symbol, leverage)
-        except Exception as e:
-            logger.error(f"Error setting leverage: {e}")
-            if "Invalid API" in str(e):
-                logger.error("Invalid Binance API credentials. Please check your .env file.")
-                logger.error("For testnet, you need to generate API keys from https://testnet.binancefuture.com/")
-                return
-            else:
-                logger.warning(f"Continuing with default leverage. Some features may be limited.")
-        
-        # Send startup notification
-        if telegram_notifier:
-            try:
-                # Create a more detailed status message
-                mode_str = 'TEST' if test_mode else 'LIVE'
-                ai_str = ' (AI-powered)' if strategy_name.startswith('ai') else ''
-                
-                status_message = (
-                    f"AI Trading Bot started for {symbol} ({timeframe}).\n"
-                    f"Strategy: {strategy_name.upper()}{ai_str}\n"
-                    f"Mode: {mode_str}\n"
+        # Create appropriate exchange interface based on mode
+        if cli_args:
+            if cli_args.train:
+                logger.info("Starting in TRAINING MODE with reinforcement learning")
+                self.mode = "training"
+                self.exchange = TestModeExchange(starting_balance=cli_args.test_balance)
+                self.rl_trainer = RLTrader(
+                    state_size=5,  # Base features: BB, RSI, MACD, VWAP, ATR
+                    action_size=3,  # No action, Long, Short
+                    batch_size=64,
+                    episodes=cli_args.episodes
                 )
-                
-                # Add training info if applicable
-                if train_ai and strategy_name.startswith('ai'):
-                    status_message += f"AI models: Trained\n"
-                
-                # Add leverage info
-                status_message += f"Leverage: {leverage}x"
-                
-                telegram_notifier.notify_system_status(status_message)
-            except Exception as e:
-                logger.error(f"Error sending Telegram notification: {e}")
+            elif cli_args.backtest:
+                logger.info("Starting in BACKTEST MODE to evaluate strategy performance")
+                self.mode = "backtest"
+                self.exchange = BacktestEngine(
+                    starting_balance=cli_args.test_balance,
+                    start_date=cli_args.start_date if cli_args.start_date else None,
+                    end_date=cli_args.end_date if cli_args.end_date else None
+                )
+            elif cli_args.test:
+                logger.info(f"Starting in TEST MODE with {cli_args.test_balance} USDT balance")
+                self.mode = "test"
+                self.exchange = TestModeExchange(starting_balance=cli_args.test_balance)
+            else:
+                self.mode = "live"
+                self.exchange = BinanceFutures(
+                    api_key=self.config.BINANCE_API_KEY,
+                    api_secret=self.config.BINANCE_API_SECRET,
+                )
+        else:
+            self.mode = "live"
+            self.exchange = BinanceFutures(
+                api_key=self.config.BINANCE_API_KEY,
+                api_secret=self.config.BINANCE_API_SECRET,
+            )
+
+        # Initialize components
+        self.market_data = MarketData(self.exchange)
+        self.risk_manager = RiskManager(self.exchange, self.config)
+        self.strategy = MeanReversionStrategy(self.market_data, self.config)
+        self.notifier = TelegramNotifier(
+            token=self.config.TELEGRAM_BOT_TOKEN, chat_id=self.config.TELEGRAM_CHAT_ID
+        )
+
+    def run(self):
+        # Different run modes based on the selected mode
+        if self.mode == "backtest":
+            self._run_backtest()
+        elif self.mode == "training":
+            self._run_training()
+        else:
+            self._run_live()
+
+    def _run_backtest(self):
+        """Run backtesting mode to evaluate strategy on historical data"""
+        logger.info(f"Starting backtest on symbols: {', '.join(self.config.TRADING_SYMBOLS)}")
         
-        logger.info(f"Bot initialized for {symbol} ({timeframe}).")
-        logger.info(f"Strategy: {strategy_name.upper()}")
-        logger.info(f"Mode: {'TEST' if test_mode else 'LIVE'}")
+        # For each symbol, get historical data and backtest
+        for symbol in self.config.TRADING_SYMBOLS:
+            logger.info(f"Backtesting {symbol}...")
+            
+            # Load historical data
+            self.exchange.load_historical_data(symbol, self.config.TIMEFRAME)
+            
+            # Run the backtest
+            results = self.exchange.run_backtest(
+                symbol,
+                self.strategy,
+                self.risk_manager,
+                self.config
+            )
+            
+            # Output the results
+            logger.info(f"Backtest results for {symbol}:")
+            logger.info(f"Total trades: {results['total_trades']}")
+            logger.info(f"Winning trades: {results['winning_trades']}")
+            logger.info(f"Losing trades: {results['losing_trades']}")
+            logger.info(f"Win rate: {results['win_rate']:.2f}%")
+            logger.info(f"Average profit: {results['avg_profit']:.2f}%")
+            logger.info(f"Average loss: {results['avg_loss']:.2f}%")
+            logger.info(f"Profit factor: {results['profit_factor']:.2f}")
+            logger.info(f"Maximum drawdown: {results['max_drawdown']:.2f}%")
+            logger.info(f"Sharpe ratio: {results['sharpe_ratio']:.2f}")
+            logger.info(f"Final balance: {results['final_balance']:.2f} USDT")
+            logger.info(f"Return: {results['total_return']:.2f}%")
+            
+            # Plot the equity curve
+            self.exchange.plot_results(symbol)
+    
+    def _run_training(self):
+        """Run training mode with reinforcement learning"""
+        logger.info(f"Starting RL training on symbols: {', '.join(self.config.TRADING_SYMBOLS)}")
         
-        # Main loop
-        retry_count = 0
-        max_retries = 3
-        
+        for symbol in self.config.TRADING_SYMBOLS:
+            logger.info(f"Training on {symbol}...")
+            
+            # Load training data
+            historical_data = self.market_data.get_historical_data(
+                symbol, self.config.TIMEFRAME, 5000  # Use larger dataset for training
+            )
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(historical_data)
+            
+            # Calculate indicators
+            df = self.strategy.calculate_indicators(df)
+            
+            # Train the RL agent
+            self.rl_trainer.train(
+                symbol=symbol,
+                data=df,
+                config=self.config
+            )
+            
+            # Save the trained model
+            model_path = f"models/rl_model_{symbol}.h5"
+            self.rl_trainer.save_model(model_path)
+            logger.info(f"Training completed for {symbol}. Model saved to {model_path}")
+            
+            # Evaluate the trained model
+            evaluation = self.rl_trainer.evaluate(
+                symbol=symbol,
+                data=df.iloc[-1000:],  # Use last part of data for evaluation
+                config=self.config
+            )
+            
+            logger.info(f"Model evaluation for {symbol}:")
+            logger.info(f"Total trades: {evaluation['total_trades']}")
+            logger.info(f"Win rate: {evaluation['win_rate']:.2f}%")
+            logger.info(f"Total return: {evaluation['total_return']:.2f}%")
+            logger.info(f"Sharpe ratio: {evaluation['sharpe_ratio']:.2f}")
+
+    def _run_live(self):
+        """Run live trading or test mode"""
+        mode_str = "TEST MODE" if self.mode == "test" else "LIVE MODE"
+        logger.info(f"Starting Binance Futures Trading Bot in {mode_str}")
+        logger.info(f"Trading symbols: {', '.join(self.config.TRADING_SYMBOLS)}")
+        logger.info(f"Leverage: {self.config.LEVERAGE}x")
+
+        self.notifier.send_message(
+            f"🤖 Trading Bot Started in {mode_str}\n"
+            f"Symbols: {', '.join(self.config.TRADING_SYMBOLS)}\n"
+            f"Leverage: {self.config.LEVERAGE}x"
+        )
+
+        # Initialize RL model if available
+        if os.path.exists(f"models/rl_model_{self.config.TRADING_SYMBOLS[0]}.h5"):
+            logger.info("Loading RL model to enhance trading decisions")
+            self.rl_model = RLTrader(state_size=5, action_size=3)
+            self.rl_model.load_model(f"models/rl_model_{self.config.TRADING_SYMBOLS[0]}.h5")
+            use_rl = True
+        else:
+            use_rl = False
+            logger.info("No RL model found, using standard strategy")
+
         while True:
             try:
-                # Analyze market
-                analysis = strategy.analyze_market()
-                
-                # Execute signals
-                execution_result = strategy.execute_signals(analysis)
-                
-                # Manage positions
-                strategy.manage_positions()
-                
-                # Reset retry count on successful iteration
-                retry_count = 0
-                
-                # Sleep until next candle
-                time.sleep(60)  # Check every minute
-            
-            except requests.exceptions.RequestException as e:
-                retry_count += 1
-                logger.error(f"Connection error in main loop (attempt {retry_count}/{max_retries}): {e}")
-                
-                if retry_count >= max_retries:
-                    logger.error(f"Maximum retries ({max_retries}) reached. Exiting.")
-                    if telegram_notifier:
-                        try:
-                            telegram_notifier.notify_error(f"Bot stopped after {max_retries} failed connection attempts.")
-                        except Exception as notify_error:
-                            logger.error(f"Error sending Telegram notification: {notify_error}")
-                    break
-                
-                # Wait before retrying with exponential backoff
-                wait_time = 60 * (2 ** (retry_count - 1))  # 60s, 120s, 240s, ...
-                logger.info(f"Waiting {wait_time} seconds before retrying...")
-                time.sleep(wait_time)
-            
-            except Exception as e:
-                logger.error(f"Error in main loop: {e}")
-                if telegram_notifier:
-                    try:
-                        telegram_notifier.notify_error(f"Error in main loop: {e}")
-                    except Exception as notify_error:
-                        logger.error(f"Error sending Telegram notification: {notify_error}")
-                time.sleep(60)  # Wait before retrying
-    
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user.")
-        if telegram_notifier:
-            try:
-                telegram_notifier.notify_system_status("Bot stopped by user.")
-            except Exception as e:
-                logger.error(f"Error sending Telegram notification: {e}")
-    
-    except Exception as e:
-        logger.error(f"Critical error: {e}")
-        if telegram_notifier:
-            try:
-                telegram_notifier.notify_error(f"Critical error: {e}")
-            except Exception as notify_error:
-                logger.error(f"Error sending Telegram notification: {notify_error}")
+                for symbol in self.config.TRADING_SYMBOLS:
+                    # Check for high-impact news events
+                    if self.market_data.check_high_impact_news():
+                        logger.info("High impact news detected, skipping trading")
+                        continue
 
+                    # Fetch latest market data
+                    historical_data = self.market_data.get_historical_data(
+                        symbol, self.config.TIMEFRAME, self.config.LOOKBACK_PERIOD
+                    )
 
-def run_backtest(symbol=None, timeframe=None, days=30, start_date=None, end_date=None, strategy_name='scalping'):
-    """
-    Run backtest.
+                    # Generate trading signals
+                    signal = self.strategy.generate_signal(symbol, historical_data)
+                    
+                    # If RL model is available, enhance decision with AI
+                    if use_rl and signal:
+                        # Prepare state for RL model
+                        df = pd.DataFrame(historical_data)
+                        df = self.strategy.calculate_indicators(df)
+                        state = self.strategy.prepare_state_for_rl(df.iloc[-1])
+                        
+                        # Get RL model's action recommendation
+                        action = self.rl_model.predict_action(state)
+                        
+                        # Override signal if RL model strongly disagrees
+                        if action == 0:  # No action
+                            signal = None
+                            logger.info(f"RL model recommended no action for {symbol}, signal canceled")
+                        elif action == 1 and signal[0] == "SHORT":  # RL recommends LONG but signal is SHORT
+                            logger.info(f"RL model and strategy conflict for {symbol}, following strategy")
+                        elif action == 2 and signal[0] == "LONG":  # RL recommends SHORT but signal is LONG
+                            logger.info(f"RL model and strategy conflict for {symbol}, following strategy")
+
+                    # Execute trades based on signals
+                    logger.info(f"Signal for {symbol}: {signal}")
+                    if signal:
+                        trade_direction, reasoning = signal
+                        position = self.exchange.get_position(symbol)
+
+                        # Check if we already have an open position
+                        if position["size"] == 0:
+                            # No open position, we can enter a new trade
+                            if self.risk_manager.can_open_trade(symbol):
+                                self._execute_trade(symbol, trade_direction, reasoning)
+                        else:
+                            # We have an open position, check if we need to close it
+                            current_direction = (
+                                "LONG" if position["size"] > 0 else "SHORT"
+                            )
+                            if trade_direction != current_direction:
+                                self._close_trade(symbol, current_direction, reasoning)
+
+                    # Update stop-loss and take-profit levels for existing positions
+                    position = self.exchange.get_position(symbol)
+                    if position["size"] != 0:
+                        self.risk_manager.update_risk_levels(
+                            symbol, position, historical_data
+                        )
+
+                # If in test mode, update simulated prices and check for triggered orders
+                if self.mode == "test":
+                    self.exchange.update_simulated_prices()
+
+                # Sleep to avoid API rate limits
+                countdown_timer(self.config.SCAN_INTERVAL)
+
+            except Exception as e:
+                error_msg = f"Error in main loop: {str(e)}"
+                logger.error(error_msg)
+                self.notifier.send_message(f"⚠️ Error: {error_msg}")
+                time.sleep(60)  # Wait a bit longer if there's an error
     
-    Args:
-        symbol (str): Trading symbol
-        timeframe (str): Trading timeframe
-        days (int): Number of days to backtest
-        start_date (str): Start date (YYYY-MM-DD)
-        end_date (str): End date (YYYY-MM-DD)
-        strategy_name (str): Name of the strategy to use
-    """
-    try:
-        logger.info("Starting backtest...")
-        
-        # Get strategy class and default timeframe
-        strategy_class, default_timeframe = get_strategy_class(strategy_name.lower())
-        
-        # Use provided timeframe or default for the strategy
-        timeframe = timeframe or default_timeframe
-        
-        # Check if it's an AI strategy
-        is_ai_strategy = strategy_name.startswith('ai')
-        
-        # Initialize backtester
-        backtester = Backtester(
-            symbol=symbol,
-            timeframe=timeframe,
-            start_date=start_date,
-            end_date=end_date,
-            strategy_class=strategy_class,
-            is_ai_strategy=is_ai_strategy
-        )
-        
-        # Run backtest
-        results = backtester.run_backtest()
-        
-        if results and 'stats' in results and 'results' in results:
-            # Plot results
-            backtester.plot_results(results)
-            
-            # Print summary
-            stats = results['stats']
-            logger.info("Backtest Summary:")
-            logger.info(f"Total Return: {stats['total_return']:.2f}%")
-            logger.info(f"Annual Return: {stats['annual_return']:.2f}%")
-            logger.info(f"Sharpe Ratio: {stats['sharpe_ratio']:.2f}")
-            logger.info(f"Max Drawdown: {stats['max_drawdown']:.2f}%")
-            logger.info(f"Win Rate: {stats['win_rate']:.2f}%")
-            logger.info(f"Profit Factor: {stats['profit_factor']:.2f}")
-            logger.info(f"Total Trades: {stats['total_trades']}")
-            
-            return results
-        else:
-            logger.error("Backtest did not produce valid results")
-            return None
-        
-    except Exception as e:
-        logger.error(f"Error running backtest: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        return None
+    def _execute_trade(self, symbol, direction, reasoning):
+        try:
+            # Calculate position size based on risk management
+            amount = self.risk_manager.calculate_position_size(symbol)
+
+            # Execute the order
+            if direction == "LONG":
+                order = self.exchange.create_market_buy_order(symbol, amount)
+                order_type = "Long"
+            else:  # SHORT
+                order = self.exchange.create_market_sell_order(symbol, amount)
+                order_type = "Short"
+
+            # Get current price as entry price
+            entry_price = self.exchange.get_current_price(symbol)
+
+            # Calculate SL and TP levels based on ATR
+            historical_data = self.market_data.get_historical_data(
+                symbol, self.config.TIMEFRAME, self.config.LOOKBACK_PERIOD
+            )
+            df = pd.DataFrame(historical_data)
+            df = self.risk_manager.indicators.add_atr(df, self.config.ATR_PERIOD)
+            atr = df["atr"].iloc[-1]
+
+            if direction == "LONG":
+                stop_loss = entry_price - (atr * self.config.SL_ATR_MULTIPLIER)
+                partial_tp = entry_price + (atr * self.config.PARTIAL_TP_ATR_MULTIPLIER)
+                full_tp = entry_price + (atr * self.config.FULL_TP_ATR_MULTIPLIER)
+            else:  # SHORT
+                stop_loss = entry_price + (atr * self.config.SL_ATR_MULTIPLIER)
+                partial_tp = entry_price - (atr * self.config.PARTIAL_TP_ATR_MULTIPLIER)
+                full_tp = entry_price - (atr * self.config.FULL_TP_ATR_MULTIPLIER)
+
+            # Set initial SL and TP orders
+            self.risk_manager.set_stop_loss_take_profit(symbol, direction, order)
+
+            # Format price values for display
+            entry_price_str = (
+                f"{entry_price:.2f}" if entry_price >= 10 else f"{entry_price:.4f}"
+            )
+            stop_loss_str = (
+                f"{stop_loss:.2f}" if stop_loss >= 10 else f"{stop_loss:.4f}"
+            )
+            partial_tp_str = (
+                f"{partial_tp:.2f}" if partial_tp >= 10 else f"{partial_tp:.4f}"
+            )
+            full_tp_str = f"{full_tp:.2f}" if full_tp >= 10 else f"{full_tp:.4f}"
+
+            # Send notification
+            msg = (
+                f"🚀 New {order_type} position opened on {symbol}\n"
+                f"Entry: {entry_price_str} USDT\n"
+                f"Stop Loss: {stop_loss_str} USDT\n"
+                f"Take Profit 1: {partial_tp_str} USDT\n"
+                f"Take Profit 2: {full_tp_str} USDT\n"
+                f"Reason: {reasoning}"
+            )
+            self.notifier.send_message(msg)
+            logger.info(f"Executed {direction} trade for {symbol}: {reasoning}")
+
+        except Exception as e:
+            error_msg = f"Error executing trade: {str(e)}"
+            logger.error(error_msg)
+            self.notifier.send_message(f"⚠️ {error_msg}")
+
+    def _close_trade(self, symbol, current_direction, reasoning):
+        try:
+            position = self.exchange.get_position(symbol)
+            current_price = self.exchange.get_current_price(symbol)
+
+            # Calculate PnL before closing
+            entry_price = position["entry_price"]
+            if current_direction == "LONG":
+                pnl_pct = ((current_price / entry_price) - 1) * 100
+                order = self.exchange.create_market_sell_order(
+                    symbol, abs(position["size"])
+                )
+                order_type = "Long"
+            else:  # SHORT
+                pnl_pct = ((entry_price / current_price) - 1) * 100
+                order = self.exchange.create_market_buy_order(
+                    symbol, abs(position["size"])
+                )
+                order_type = "Short"
+
+            # Format price for display
+            price_str = (
+                f"{current_price:.2f}"
+                if current_price >= 10
+                else f"{current_price:.4f}"
+            )
+            entry_str = (
+                f"{entry_price:.2f}" if entry_price >= 10 else f"{entry_price:.4f}"
+            )
+
+            # Send notification
+            msg = (
+                f"🔴 Closed {order_type} position on {symbol}\n"
+                f"Entry: {entry_str} USDT\n"
+                f"Exit: {price_str} USDT\n"
+                f"P&L: {pnl_pct:.2f}%\n"
+                f"Reason: {reasoning}"
+            )
+            self.notifier.send_message(msg)
+            logger.info(f"Closed {current_direction} trade for {symbol}: {reasoning}")
+
+        except Exception as e:
+            error_msg = f"Error closing trade: {str(e)}"
+            logger.error(error_msg)
+            self.notifier.send_message(f"⚠️ {error_msg}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="AI Trading Bot")
-    
-    parser.add_argument("--test", action="store_true", help="Run in test mode (no real trades)")
-    parser.add_argument("--symbol", type=str, help="Trading symbol (e.g., BTCUSDT)")
-    parser.add_argument("--leverage", type=int, help="Trading leverage")
-    parser.add_argument("--timeframe", type=str, help="Trading timeframe (e.g., 1m, 5m, 15m, 1h)")
-    parser.add_argument(
-        "--strategy",
-        type=str,
-        choices=['scalping', 'swing', 'breakout', 'ai', 'ai_scalping', 'ai_swing', 'ai_breakout'],
-        default='scalping',
-        help="Trading strategy to use"
-    )
-    parser.add_argument("--train-ai", action="store_true", help="Train AI models before running")
-    parser.add_argument("--start-date", type=str, help="Start date for AI training (YYYY-MM-DD)")
-    parser.add_argument("--end-date", type=str, help="End date for AI training (YYYY-MM-DD)")
-    
-    # Backtest arguments
-    parser.add_argument("--backtest", action="store_true", help="Run backtest")
-    parser.add_argument("--backtest-days", type=int, default=30, help="Number of days to backtest")
-    parser.add_argument("--backtest-start", type=str, help="Start date for backtest (YYYY-MM-DD)")
-    parser.add_argument("--backtest-end", type=str, help="End date for backtest (YYYY-MM-DD)")
-    
-    args = parser.parse_args()
-    
-    # Check if we need to run a backtest
-    if args.backtest:
-        run_backtest(
-            symbol=args.symbol,
-            timeframe=args.timeframe,
-            days=args.backtest_days,
-            start_date=args.backtest_start,
-            end_date=args.backtest_end,
-            strategy_name=args.strategy
-        )
-    # Check if we need to train AI models and then run in test mode
-    elif args.train_ai and args.test:
-        logger.info("Training AI models and then running in test mode...")
-        run_bot(
-            test_mode=True,  # Always use test mode
-            api_key=os.getenv('BINANCE_API_KEY'),
-            api_secret=os.getenv('BINANCE_API_SECRET'),
-            symbol=args.symbol,
-            leverage=args.leverage,
-            timeframe=args.timeframe,
-            strategy_name=args.strategy,
-            train_ai=True,  # Train AI models
-            start_date=args.start_date,
-            end_date=args.end_date
-        )
-    # Otherwise, run the bot normally
-    else:
-        run_bot(
-            test_mode=args.test,
-            api_key=os.getenv('BINANCE_API_KEY'),
-            api_secret=os.getenv('BINANCE_API_SECRET'),
-            symbol=args.symbol,
-            leverage=args.leverage,
-            timeframe=args.timeframe,
-            strategy_name=args.strategy,
-            train_ai=args.train_ai,
-            start_date=args.start_date,
-            end_date=args.end_date
-        )
+    # Create necessary directories
+    os.makedirs("logs", exist_ok=True)
+    os.makedirs("models", exist_ok=True)
+    os.makedirs("data", exist_ok=True)
+
+    # Parse command line arguments
+    args = parse_arguments()
+
+    bot = TradingBot(cli_args=args)
+    bot.run()

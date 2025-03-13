@@ -1,224 +1,135 @@
-# AI Trading Bot for Binance Futures
+# Binance Futures AI Trading Bot
 
-An advanced cryptocurrency trading bot that uses AI-powered technical analysis to trade on Binance Futures. The bot supports multiple trading strategies and includes backtesting capabilities.
+## AI-Powered Mean Reversion Strategy
 
-## Features
+This bot implements a fully automated mean reversion trading strategy for Binance Futures, using technical indicators and risk management rules.
 
-- Multiple trading strategies:
-  - **Scalping Strategy (5m)**: Short-term trades based on RSI and VWAP
-  - **Swing Strategy (1h)**: Medium-term trades using MACD and Bollinger Bands
-  - **Breakout Strategy (15m)**: Trend-following trades based on price breakouts and volume
-  - **AI-Powered Strategies**: Machine learning enhanced versions of all strategies
-- Real-time market analysis and automated trading
-- Risk management with take profit, stop loss, and trailing stop
-- Telegram notifications for trades and system status
-- Comprehensive backtesting framework
-- Support for multiple trading pairs
-- Configurable leverage and position sizing
-- AI-powered features:
-  - Machine learning models (LSTM, XGBoost, Random Forest)
-  - Reinforcement learning for adaptive trading
-  - Ensemble model combining multiple algorithms
-  - Sentiment analysis integration
-  - Dynamic position sizing based on confidence
-  - Adaptive risk management
+### Features
 
-## Trading Strategies
+- **Mean Reversion Strategy**: Trading based on price deviations from the mean
+- **Technical Indicators**: Bollinger Bands, RSI, MACD, VWAP
+- **Risk Management**: Dynamic stop-loss and take-profit based on ATR
+- **Telegram Notifications**: Real-time alerts for all trading activities
+- **AI Decision Making**: Signal generation and optimization based on market conditions
+- **Reinforcement Learning**: Train and optimize trading decisions through AI
+- **Multiple Operation Modes**: Live trading, test simulation, backtesting, and training
 
-### 1. Scalping Strategy
-- **Timeframe**: 5 minutes
-- **Indicators**: RSI and VWAP
-- **Entry Rules**:
-  - Long: RSI < 30 (oversold) and price above VWAP
-  - Short: RSI > 70 (overbought) and price below VWAP
-- **Risk Settings**:
-  - Take Profit: 0.5%
-  - Stop Loss: 0.3%
+### Requirements
 
-### 2. Swing Strategy
-- **Timeframe**: 1 hour
-- **Indicators**: MACD and Bollinger Bands
-- **Entry Rules**:
-  - Long: MACD crossover (bullish) and price below lower BB
-  - Short: MACD crossunder (bearish) and price above upper BB
-- **Risk Settings**:
-  - Take Profit: 2.0%
-  - Stop Loss: 1.0%
+- Python 3.8+
+- TA-Lib (technical analysis library)
+- Binance API key with Futures trading permissions
+- Telegram Bot for notifications
+- TensorFlow (optional, for reinforcement learning features)
 
-### 3. Breakout Strategy
-- **Timeframe**: 15 minutes
-- **Indicators**: ATR and Volume
-- **Entry Rules**:
-  - Long: Break above recent high with volume confirmation
-  - Short: Break below recent low with volume confirmation
-- **Risk Settings**:
-  - Take Profit: 1.5%
-  - Stop Loss: 0.8%
+### Setup
 
-### 4. AI-Powered Strategies
-- **AI Scalping Strategy**: Enhanced scalping with machine learning
-- **AI Swing Strategy**: Enhanced swing trading with machine learning
-- **AI Breakout Strategy**: Enhanced breakout detection with machine learning
-- **Features**:
-  - Predictive price movement using LSTM neural networks
-  - Pattern recognition with XGBoost and Random Forest
-  - Reinforcement learning for adaptive trading decisions
-  - Ensemble model combining multiple algorithms
-  - Sentiment analysis from news and social media
-  - Dynamic position sizing based on prediction confidence
-  - Volatility-adjusted risk parameters
+1. **Install dependencies**
 
-## Installation
-
-1. Clone the repository:
-```bash
-git clone https://github.com/yourusername/trading-bot.git
-cd trading-bot
-```
-
-2. Create and activate a virtual environment:
-```bash
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-venv\Scripts\activate     # Windows
-```
-
-3. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-4. Copy the example environment file and configure your settings:
+2. **Configure environment variables**
+
+Copy the example environment file and edit it with your own API keys:
+
 ```bash
 cp .env.example .env
+nano .env  # or use any text editor
 ```
 
-5. Edit `.env` with your Binance API credentials and Telegram bot token.
+Fill in your:
+- Binance API Key and Secret (with Futures trading permissions)
+- Telegram Bot Token and Chat ID
+- Optional: Customize trading parameters
 
-## Configuration
+3. **Run the bot**
 
-The bot's behavior can be customized through the `config.py` file:
+Basic usage (live trading):
+```bash
+python main.py
+```
 
-- Trading settings (symbol, leverage, position size)
-- Strategy-specific parameters
-- Risk management settings
-- Notification preferences
-- Backtesting parameters
-- AI model parameters
+With command line arguments:
+```bash
+# Specify trading symbols
+python main.py --symbols BTCUSDT,ETHUSDT
 
-## Usage
+# Specify leverage
+python main.py --leverage 10
 
-### Running the Bot
+# Specify both
+python main.py --symbols SOLUSDT,BNBUSDT --leverage 15
+```
 
-Run the bot with a specific strategy:
+### Operation Modes
+
+#### Test Mode
+Run the bot in test mode to simulate trading without executing real trades:
 
 ```bash
-# Run with Scalping Strategy (default)
-python main.py --symbol BTCUSDT --strategy scalping
+# Basic test mode with default 1000 USDT balance
+python main.py --test
 
-# Run with Swing Strategy
-python main.py --symbol BTCUSDT --strategy swing
-
-# Run with Breakout Strategy
-python main.py --symbol BTCUSDT --strategy breakout
-
-# Run with AI Scalping Strategy
-python main.py --symbol BTCUSDT --strategy ai_scalping
-
-# Run with AI Swing Strategy
-python main.py --symbol BTCUSDT --strategy ai_swing
-
-# Run with AI Breakout Strategy
-python main.py --symbol BTCUSDT --strategy ai_breakout
+# Test with specific symbols and starting balance
+python main.py --test --symbols BTCUSDT,ETHUSDT --test-balance 5000
 ```
 
-Additional options:
-- `--test`: Run in test mode (no real trades)
-- `--timeframe`: Override default strategy timeframe
-- `--leverage`: Set custom leverage
-- `--train-ai`: Train AI models before running
-- `--start-date`: Start date for AI training (YYYY-MM-DD)
-- `--end-date`: End date for AI training (YYYY-MM-DD)
-
-### Backtesting
-
-Test strategies on historical data:
+#### Backtesting Mode
+Evaluate strategy performance with historical data:
 
 ```bash
-# Backtest Scalping Strategy
-python main.py --backtest --symbol BTCUSDT --strategy scalping --backtest-start 2023-01-01 --backtest-end 2023-06-01
+# Basic backtest with default settings
+python main.py --backtest --symbols BTCUSDT
 
-# Backtest Swing Strategy
-python main.py --backtest --symbol BTCUSDT --strategy swing --backtest-start 2023-01-01 --backtest-end 2023-06-01
-
-# Backtest Breakout Strategy
-python main.py --backtest --symbol BTCUSDT --strategy breakout --backtest-start 2023-01-01 --backtest-end 2023-06-01
-
-# Backtest AI Strategies
-python main.py --backtest --symbol BTCUSDT --strategy ai_scalping --backtest-start 2023-01-01 --backtest-end 2023-06-01
+# Backtest with specific date range
+python main.py --backtest --symbols BTCUSDT --start-date 2023-01-01 --end-date 2023-12-31
 ```
 
-Additional backtest options:
-- `--backtest-days`: Number of days to backtest (default: 30)
-- `--timeframe`: Override default strategy timeframe
-
-## AI Model Training
-
-The AI-powered strategies require training before use:
+#### Training Mode
+Train the reinforcement learning model to optimize trading decisions:
 
 ```bash
-# Train AI Scalping Strategy
-python main.py --symbol BTCUSDT --strategy ai_scalping --train-ai --start-date 2022-01-01 --end-date 2023-01-01
+# Train the RL model on BTCUSDT data
+python main.py --train --symbols BTCUSDT
 
-# Train AI Swing Strategy
-python main.py --symbol BTCUSDT --strategy ai_swing --train-ai --start-date 2022-01-01 --end-date 2023-01-01
-
-# Train AI Breakout Strategy
-python main.py --symbol BTCUSDT --strategy ai_breakout --train-ai --start-date 2022-01-01 --end-date 2023-01-01
+# Train with more episodes
+python main.py --train --symbols ETHUSDT --episodes 200
 ```
 
-The trained models are saved in the `models/` directory and automatically loaded when running the bot.
+### Trading Strategy
 
-## Backtest Results
+The bot uses a mean reversion strategy with the following rules:
 
-The bot generates detailed backtest reports and visualizations:
+- **Buy Signal**: Price below lower Bollinger Band + RSI < 25 + MACD histogram turning positive
+- **Sell Signal**: Price above upper Bollinger Band + RSI > 75 + MACD histogram turning negative
 
-- Equity curve
-- Drawdown analysis
-- Trade distribution
-- Monthly returns
-- Performance metrics:
-  - Total trades
-  - Win rate
-  - Profit factor
-  - Maximum drawdown
-  - Risk-adjusted return
-  - AI model accuracy metrics
+### Risk Management
 
-Results are saved in the `plots/` directory with strategy-specific filenames.
+- Configurable leverage (default: 20x)
+- Dynamic stop-loss: 1.5x ATR
+- Take-profit strategy: Partial (1x ATR) and full (2x ATR)
+- Maximum risk per trade: 1% of account balance
 
-## Risk Warning
+### Configuration Options
 
-This bot is for educational purposes only. Cryptocurrency trading carries significant risks:
+The bot can be customized through environment variables or command line arguments:
 
-- High volatility
-- Potential for significant losses
-- Technical failures
-- Market manipulation
-- AI model limitations and biases
+**Command Line Arguments**:
+- `--symbols`: Comma-separated list of trading pairs (e.g., BTCUSDT,ETHUSDT)
+- `--leverage`: Trading leverage (e.g., 20)
+- `--test`: Run in test mode without making real trades
+- `--backtest`: Run in backtest mode with historical data
+- `--train`: Run in training mode with reinforcement learning
+- `--test-balance`: Starting balance for test mode (default: 1000 USDT)
+- `--start-date`: Start date for backtesting (format: YYYY-MM-DD)
+- `--end-date`: End date for backtesting (format: YYYY-MM-DD)
+- `--episodes`: Number of episodes for RL training (default: 100)
 
-Always start with small amounts and test thoroughly in test mode before live trading.
+**Environment Variables**:
+See `.env.example` for all available options.
 
-## Contributing
+### Disclaimer
 
-Contributions are welcome! Please feel free to submit pull requests or open issues for:
-
-- Bug fixes
-- New features
-- Strategy improvements
-- AI model enhancements
-- Documentation updates
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details. 
+Trading cryptocurrencies involves significant risk and can lead to loss of capital. This trading bot is provided for educational purposes only. Use it at your own risk.
