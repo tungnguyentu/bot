@@ -222,13 +222,13 @@ class TradingEnvironment(gym.Env):
             
             # Check for NaN values and replace them
             if np.isnan(obs).any():
-                logger.warning(f"NaN values in observation, replacing with zeros")
+                print(f"NaN values in observation, replacing with zeros")
                 obs = np.nan_to_num(obs, nan=0.0)
             
             return obs.astype(np.float32)
             
         except Exception as e:
-            logger.error(f"Error creating observation: {e}")
+            print(f"Error creating observation: {e}")
             # Return a safe default observation
             feature_count = len(self.config.features) + 4
             return np.zeros(feature_count, dtype=np.float32)

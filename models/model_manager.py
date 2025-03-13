@@ -68,15 +68,40 @@ class ModelManager:
         y = df['price_direction'].copy()
         
         # Add some additional engineered features
-        X['close_to_vwap'] = df['close'] / df['vwap'] - 1
-        X['bb_position'] = (df['close'] - df['bollinger_lower']) / (df['bollinger_upper'] - df['bollinger_lower'])
+        X['close_to_vwap'] = df['close'] / (df['vwap'] + 1e-8) - 1  # Avoid division by zero
+        X['bb_position'] = (df['close'] - df['bollinger_lower']) / (df['bollinger_upper'] - df['bollinger_lower'] + 1e-8)
         
         return X, y
     
     def train(self, historical_data):
         """Train both XGBoost and RL models"""
+        # Clean data before training
+        historical_data = self._preprocess_data(historical_data)
+        
         self._train_xgb_model(historical_data)
         self._train_rl_model(historical_data)
+    
+    def _preprocess_data(self, data):
+        """Preprocess data to ensure it's suitable for training"""
+        # Make a copy to avoid modifying original
+        df = data.copy()
+        
+        # Drop rows with NaN values
+        df.dropna(inplace=True)
+        
+        # Replace infinite values with large numbers
+        df.replace([np.inf, -np.inf], [1e6, -1e6], inplace=True)
+        
+        # Remove extreme outliers (more than 5 std from mean) for each feature
+        for col in self.features:
+            if col in df.columns:
+                mean = df[col].mean()
+                std = df[col].std()
+                if std > 0:  # Avoid division by zero
+                    df = df[(df[col] > mean - 5 * std) & (df[col] < mean + 5 * std)]
+        
+        logger.info(f"Data preprocessed: {len(data)} rows -> {len(df)} rows")
+        return df
     
     def _train_xgb_model(self, historical_data):
         """Train XGBoost model for predicting price direction"""
@@ -135,46 +160,63 @@ class ModelManager:
         """Train Reinforcement Learning model using PPO"""
         logger.info("Training PPO-based RL model for trading strategy...")
         
-        # Create environment
-        env = TradingEnvironment(historical_data, self.config)
-        env = DummyVecEnv([lambda: env])
-        
-        # Callbacks for saving and evaluating
-        save_path = os.path.join(self.config.model_dir, "checkpoints")
-        os.makedirs(save_path, exist_ok=True)
-        
-        checkpoint_callback = CheckpointCallback(
-            save_freq=10000,
-            save_path=save_path,
-            name_prefix=self.config.rl_model_name
-        )
-        
-        # Create or load model
-        rl_path = os.path.join(self.config.model_dir, f"{self.config.rl_model_name}")
-        
-        if os.path.exists(rl_path + ".zip"):
-            logger.info("Loading existing PPO model...")
-            self.rl_model = PPO.load(rl_path, env=env)
-        else:
-            logger.info("Creating new PPO model...")
-            self.rl_model = PPO(
-                "MlpPolicy",
-                env,
-                verbose=1,
-                tensorboard_log=os.path.join(self.config.model_dir, "tb_logs"),
-                learning_rate=0.0003
+        try:
+            # Create environment
+            env = TradingEnvironment(historical_data, self.config)
+            env = DummyVecEnv([lambda: env])
+            
+            # Callbacks for saving and evaluating
+            save_path = os.path.join(self.config.model_dir, "checkpoints")
+            os.makedirs(save_path, exist_ok=True)
+            
+            checkpoint_callback = CheckpointCallback(
+                save_freq=10000,
+                save_path=save_path,
+                name_prefix=self.config.rl_model_name
             )
-        
-        # Train model
-        self.rl_model.learn(
-            total_timesteps=100000,  # Adjust based on your requirements
-            callback=checkpoint_callback
-        )
-        
-        # Save final model
-        self.rl_model.save(rl_path)
-        
-        logger.info("RL model training completed")
+            
+            # Create or load model
+            rl_path = os.path.join(self.config.model_dir, f"{self.config.rl_model_name}")
+            
+            if os.path.exists(rl_path + ".zip"):
+                logger.info("Loading existing PPO model...")
+                self.rl_model = PPO.load(rl_path, env=env)
+            else:
+                logger.info("Creating new PPO model...")
+                # Configure PPO with smaller network and parameters to prevent NaN issues
+                policy_kwargs = dict(
+                    net_arch=[64, 64]  # Smaller network architecture
+                )
+                
+                self.rl_model = PPO(
+                    "MlpPolicy",
+                    env,
+                    policy_kwargs=policy_kwargs,
+                    verbose=1,
+                    tensorboard_log=os.path.join(self.config.model_dir, "tb_logs"),
+                    learning_rate=0.0001,  # Lower learning rate
+                    gamma=0.99,
+                    n_steps=2048,
+                    ent_coef=0.01,  # Add some entropy for exploration
+                    clip_range=0.2,
+                    batch_size=64
+                )
+            
+            # Train model
+            logger.info("Starting RL model training...")
+            self.rl_model.learn(
+                total_timesteps=100000,  # Adjust based on your requirements
+                callback=checkpoint_callback
+            )
+            
+            # Save final model
+            self.rl_model.save(rl_path)
+            
+            logger.info("RL model training completed")
+            
+        except Exception as e:
+            logger.error(f"Error training RL model: {e}", exc_info=True)
+            raise
     
     def predict_direction(self, market_data):
         """Predict price direction using XGBoost model"""
@@ -182,10 +224,21 @@ class ModelManager:
             logger.warning("XGBoost model not trained yet. Using random prediction.")
             return np.random.choice([0, 1])
         
+        # Clean input data
+        market_data = self._preprocess_data(market_data)
+        if len(market_data) == 0:
+            logger.warning("No valid data for prediction after preprocessing")
+            return np.random.choice([0, 1])
+        
         features = market_data[self.features].iloc[-1:].copy()
-        features['close_to_vwap'] = market_data['close'].iloc[-1] / market_data['vwap'].iloc[-1] - 1
+        features['close_to_vwap'] = market_data['close'].iloc[-1] / (market_data['vwap'].iloc[-1] + 1e-8) - 1
         features['bb_position'] = (market_data['close'].iloc[-1] - market_data['bollinger_lower'].iloc[-1]) / (
-                market_data['bollinger_upper'].iloc[-1] - market_data['bollinger_lower'].iloc[-1])
+                market_data['bollinger_upper'].iloc[-1] - market_data['bollinger_lower'].iloc[-1] + 1e-8)
+        
+        # Check for NaN values
+        if features.isna().any().any():
+            logger.warning("NaN values in prediction features, using default prediction")
+            return np.random.choice([0, 1])
         
         # Scale features
         features_scaled = self.scaler.transform(features)
@@ -200,17 +253,33 @@ class ModelManager:
     
     def get_trading_action(self, market_data, account_state):
         """Get trading action from the RL model"""
-        if self.rl_model is None:
-            logger.warning("RL model not trained yet. Using default action (do nothing).")
-            return 0  # No action
-        
-        # Create environment with current state
-        env = TradingEnvironment(market_data, self.config, initial_state=account_state)
-        
-        # Get observation
-        obs = env.get_observation()
-        
-        # Get action from model
-        action, _ = self.rl_model.predict(obs, deterministic=True)
-        
-        return action
+        try:
+            if self.rl_model is None:
+                logger.warning("RL model not trained yet. Using default action (do nothing).")
+                return 0  # No action
+            
+            # Clean input data
+            market_data = self._preprocess_data(market_data)
+            if len(market_data) == 0:
+                logger.warning("No valid data for prediction after preprocessing")
+                return 0
+            
+            # Create environment with current state
+            env = TradingEnvironment(market_data, self.config, initial_state=account_state)
+            
+            # Get observation
+            obs = env.get_observation()
+            
+            # Check for NaN values
+            if np.isnan(obs).any():
+                logger.warning("NaN values in observation, using default action")
+                return 0
+            
+            # Get action from model
+            action, _ = self.rl_model.predict(obs, deterministic=True)
+            
+            return action
+            
+        except Exception as e:
+            logger.error(f"Error getting trading action: {e}")
+            return 0  # Default to no action on error
