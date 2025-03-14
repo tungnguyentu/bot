@@ -1,6 +1,7 @@
 import argparse
 import logging
 import traceback
+import os
 from config import Config
 from data.collector import BinanceDataCollector
 from models.model_manager import ModelManager
@@ -63,6 +64,14 @@ def main():
             
             try:
                 model_manager.train(historical_data)
+                
+                # Verify models were created/saved properly
+                rl_path = os.path.join(config.model_dir, f"{config.rl_model_name}.zip")
+                if os.path.exists(rl_path):
+                    logger.info(f"RL model file created: {rl_path}")
+                else:
+                    logger.warning(f"RL model file not found after training: {rl_path}")
+                    
                 telegram.send_message("✅ Bot training completed")
             except Exception as e:
                 error_msg = f"Training failed: {str(e)}"
@@ -95,6 +104,20 @@ def main():
         elif args.mode in ["test", "live"]:
             logger.info(f"Starting bot in {args.mode} mode")
             telegram.send_message(f"🚀 Bot started in {args.mode.upper()} mode")
+            
+            # Check if models exist before starting
+            rl_path = os.path.join(config.model_dir, f"{config.rl_model_name}.zip")
+            xgb_path = os.path.join(config.model_dir, f"{config.prediction_model_name}.json")
+            
+            if not os.path.exists(rl_path):
+                msg = f"RL model file not found at {rl_path}. Please run training first."
+                logger.error(msg)
+                telegram.send_message(f"⚠️ {msg}")
+            
+            if not os.path.exists(xgb_path):
+                msg = f"XGBoost model file not found at {xgb_path}. Please run training first."
+                logger.error(msg)
+                telegram.send_message(f"⚠️ {msg}")
             
             try:
                 bot = TradingBot(

@@ -18,7 +18,7 @@ class TradingBot:
         self.is_test_mode = is_test_mode
         
         # Create Binance client with API keys
-        self.client = Client(config.binance_api_key, config.binance_api_secret)
+        self.client = Client(config.binance_api_key, config.binance_api_secret, testnet=is_test_mode)
         
         # Bot state
         self.active_positions = {}  # symbol -> position details
