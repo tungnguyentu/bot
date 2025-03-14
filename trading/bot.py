@@ -17,13 +17,23 @@ class TradingBot:
         self.telegram = telegram
         self.is_test_mode = is_test_mode
         
-        # Create Binance client with API keys
-        self.client = Client(config.binance_api_key, config.binance_api_secret, testnet=is_test_mode)
+        # Create Binance client with appropriate API keys (testnet for test mode)
+        if is_test_mode:
+            # Use Binance Testnet for test mode
+            logger.info("Using Binance Testnet for test mode")
+            self.client = Client(
+                config.binance_testnet_api_key, 
+                config.binance_testnet_api_secret,
+                testnet=True  # Enable testnet
+            )
+        else:
+            # Use real Binance API for live mode
+            self.client = Client(config.binance_api_key, config.binance_api_secret)
         
         # Bot state
         self.active_positions = {}  # symbol -> position details
         self.daily_pnl = 0
-        self.start_balance = self._get_account_balance() if not is_test_mode else config.initial_balance
+        self.start_balance = self._get_account_balance()
         self.current_balance = self.start_balance
         self.daily_trades = 0
         self.total_trades = 0
@@ -35,7 +45,7 @@ class TradingBot:
     def _initialize(self):
         """Initialize the bot and send startup notification"""
         # Check if we're in test mode
-        mode_str = "TEST MODE" if self.is_test_mode else "LIVE TRADING"
+        mode_str = "TEST MODE (Binance Testnet)" if self.is_test_mode else "LIVE TRADING"
         
         # Send welcome message
         welcome_msg = (
@@ -50,39 +60,34 @@ class TradingBot:
         )
         self.telegram.send_message(welcome_msg)
         
-        # If not in test mode, check and set leverage on Binance
-        if not self.is_test_mode:
-            try:
-                # Set leverage for the symbol
-                self.client.futures_change_leverage(
-                    symbol=self.data_collector.symbol,
-                    leverage=self.config.initial_leverage
-                )
-                logger.info(f"Leverage set to {self.config.initial_leverage}x for {self.data_collector.symbol}")
-            except BinanceAPIException as e:
-                logger.error(f"Failed to set leverage: {e}")
-                self.telegram.send_message(f"⚠️ Failed to set leverage: {str(e)}")
+        try:
+            # Set leverage for the symbol
+            self.client.futures_change_leverage(
+                symbol=self.data_collector.symbol,
+                leverage=self.config.initial_leverage
+            )
+            logger.info(f"Leverage set to {self.config.initial_leverage}x for {self.data_collector.symbol}")
+        except BinanceAPIException as e:
+            logger.error(f"Failed to set leverage: {e}")
+            self.telegram.send_message(f"⚠️ Failed to set leverage: {str(e)}")
     
     def _get_account_balance(self):
         """Get account balance from Binance"""
-        if self.is_test_mode:
-            return self.config.initial_balance
-            
         try:
             account_info = self.client.futures_account()
             for asset in account_info['assets']:
                 if asset['asset'] == 'USDT':
                     return float(asset['walletBalance'])
-            return self.config.initial_balance  # Default if not found
+            
+            # If we can't find the USDT balance, return default
+            logger.warning("USDT wallet not found, using default balance")
+            return self.config.initial_balance
         except BinanceAPIException as e:
             logger.error(f"Failed to get account balance: {e}")
             return self.config.initial_balance
     
     def _get_active_positions(self):
         """Get currently open positions from Binance"""
-        if self.is_test_mode:
-            return self.active_positions
-            
         try:
             positions = self.client.futures_position_information()
             active_positions = {}
@@ -108,34 +113,6 @@ class TradingBot:
     
     def _execute_trade(self, symbol, side, quantity):
         """Execute a trade on Binance"""
-        if self.is_test_mode:
-            logger.info(f"TEST MODE - Would execute {side} order for {quantity} {symbol}")
-            
-            # Simulate adding position
-            current_price = float(self.client.get_symbol_ticker(symbol=symbol)['price'])
-            
-            position = {
-                'side': side,
-                'size': quantity,
-                'entry_price': current_price,
-                'mark_price': current_price,
-                'pnl': 0.0,
-                'leverage': self.config.initial_leverage,
-                'entry_time': datetime.now()
-            }
-            
-            self.active_positions[symbol] = position
-            
-            self.telegram.send_message(
-                f"🔄 *TEST TRADE EXECUTED*\n"
-                f"Symbol: {symbol}\n"
-                f"Side: {side}\n"
-                f"Quantity: {quantity}\n"
-                f"Price: {current_price}\n"
-                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            )
-            return True
-        
         try:
             # Prepare order parameters
             order_side = 'BUY' if side == 'LONG' else 'SELL'
@@ -150,15 +127,30 @@ class TradingBot:
             
             logger.info(f"Order executed: {order}")
             
+            # Get current price for logging
+            current_price = float(self.client.get_symbol_ticker(symbol=symbol)['price'])
+            
             # Send notification
             self.telegram.send_message(
-                f"✅ *TRADE EXECUTED*\n"
+                f"✅ *{'TEST ' if self.is_test_mode else ''}TRADE EXECUTED*\n"
                 f"Symbol: {symbol}\n"
                 f"Side: {side}\n"
                 f"Quantity: {quantity}\n"
+                f"Price: {current_price}\n"
                 f"Order ID: {order['orderId']}\n"
                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             )
+            
+            # Add to active positions
+            self.active_positions[symbol] = {
+                'side': side,
+                'size': quantity,
+                'entry_price': current_price,
+                'mark_price': current_price,
+                'pnl': 0.0,
+                'leverage': self.config.initial_leverage,
+                'entry_time': datetime.now()
+            }
             
             return True
         except BinanceAPIException as e:
@@ -173,42 +165,6 @@ class TradingBot:
             return False
         
         position = self.active_positions[symbol]
-        
-        if self.is_test_mode:
-            logger.info(f"TEST MODE - Would close {position['side']} position for {symbol}")
-            
-            # Calculate PnL for test mode
-            current_price = float(self.client.get_symbol_ticker(symbol=symbol)['price'])
-            entry_price = position['entry_price']
-            size = position['size']
-            leverage = position['leverage']
-            
-            # Calculate PnL
-            if position['side'] == 'LONG':
-                pnl = (current_price - entry_price) / entry_price * size * leverage
-            else:
-                pnl = (entry_price - current_price) / entry_price * size * leverage
-            
-            self.daily_pnl += pnl
-            self.current_balance += pnl
-            self.daily_trades += 1
-            self.total_trades += 1
-            
-            # Remove position
-            del self.active_positions[symbol]
-            
-            # Send notification
-            self.telegram.send_message(
-                f"🔄 *TEST POSITION CLOSED*\n"
-                f"Symbol: {symbol}\n"
-                f"Side: {position['side']}\n"
-                f"PnL: {pnl:.2f} USDT\n"
-                f"Entry: {entry_price}\n"
-                f"Exit: {current_price}\n"
-                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            )
-            
-            return True
         
         try:
             # Determine order side (opposite of position side)
@@ -225,19 +181,33 @@ class TradingBot:
             
             logger.info(f"Position closed: {order}")
             
-            # Get PnL
-            pnl = position['pnl']
+            # Get current price
+            current_price = float(self.client.get_symbol_ticker(symbol=symbol)['price'])
+            
+            # Calculate PnL
+            entry_price = position['entry_price']
+            size = position['size']
+            leverage = position['leverage']
+            
+            # Calculate PnL
+            if position['side'] == 'LONG':
+                pnl = (current_price - entry_price) / entry_price * size * leverage
+            else:
+                pnl = (entry_price - current_price) / entry_price * size * leverage
+            
             self.daily_pnl += pnl
+            self.current_balance += pnl
             self.daily_trades += 1
             self.total_trades += 1
             
             # Send notification
             self.telegram.send_message(
-                f"✅ *POSITION CLOSED*\n"
+                f"✅ *{'TEST ' if self.is_test_mode else ''}POSITION CLOSED*\n"
                 f"Symbol: {symbol}\n"
                 f"Side: {position['side']}\n"
                 f"PnL: {pnl:.2f} USDT\n"
-                f"Order ID: {order['orderId']}\n"
+                f"Entry: {entry_price}\n"
+                f"Exit: {current_price}\n"
                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             )
             
@@ -366,7 +336,7 @@ class TradingBot:
         
     def run(self):
         """Main bot loop"""
-        logger.info("Starting trading bot loop")
+        logger.info(f"Starting trading bot loop in {'test' if self.is_test_mode else 'live'} mode")
         
         try:
             while True:
@@ -375,8 +345,7 @@ class TradingBot:
                     self._check_daily_reset()
                     
                     # Update active positions
-                    if not self.is_test_mode:
-                        self.active_positions = self._get_active_positions()
+                    self.active_positions = self._get_active_positions()
                     
                     # Get current market data
                     market_data = self.data_collector.get_latest_data()
