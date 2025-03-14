@@ -9,6 +9,7 @@ An AI-powered trading bot that executes mean reversion strategies, adapts to mar
 - Comprehensive backtesting framework with performance metrics
 - Risk management with dynamic ATR-based stop-loss and take-profit
 - Telegram notifications for trades and account status
+- Test mode using Binance Testnet for safe testing
 
 ## Setup
 
@@ -19,11 +20,25 @@ An AI-powered trading bot that executes mean reversion strategies, adapts to mar
    ```
 3. Create a `.env` file in the project directory with your API keys:
    ```
+   # Production API keys
    BINANCE_API_KEY=your_binance_api_key
    BINANCE_API_SECRET=your_binance_api_secret
-   TELEGRAM_TOKEN=your_telegram_bot_token
+   
+   # Testnet API keys (for test mode)
+   BINANCE_TESTNET_API_KEY=your_testnet_api_key
+   BINANCE_TESTNET_API_SECRET=your_testnet_api_secret
+   
+   # Telegram settings
+   TELEGRAM_BOT_TOKEN=your_telegram_bot_token
    TELEGRAM_CHAT_ID=your_telegram_chat_id
    ```
+
+## Getting Binance Testnet API Keys
+
+1. Visit [Binance Futures Testnet](https://testnet.binancefuture.com/)
+2. Register for a testnet account
+3. Generate API keys from your testnet dashboard
+4. Add these keys to your `.env` file as `BINANCE_TESTNET_API_KEY` and `BINANCE_TESTNET_API_SECRET`
 
 ## Usage
 
@@ -37,7 +52,7 @@ python main.py --mode train --symbol BTCUSDT --interval 1h
 python main.py --mode backtest --symbol BTCUSDT --interval 1h
 ```
 
-### Test mode (simulated trading with real market data)
+### Test mode (using Binance Testnet)
 ```
 python main.py --mode test --symbol BTCUSDT --interval 1h
 ```

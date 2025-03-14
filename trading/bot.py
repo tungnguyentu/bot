@@ -22,8 +22,8 @@ class TradingBot:
             # Use Binance Testnet for test mode
             logger.info("Using Binance Testnet for test mode")
             self.client = Client(
-                config.binance_testnet_api_key, 
-                config.binance_testnet_api_secret,
+                config.binance_api_key, 
+                config.binance_api_secret,
                 testnet=True  # Enable testnet
             )
         else:

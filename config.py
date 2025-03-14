@@ -6,9 +6,15 @@ class Config:
     def __init__(self):
         load_dotenv()
 
-        # API credentials
+        # API credentials for production
         self.binance_api_key = os.getenv("BINANCE_API_KEY", "")
         self.binance_api_secret = os.getenv("BINANCE_API_SECRET", "")
+        
+        # API credentials for testnet
+        self.binance_testnet_api_key = os.getenv("BINANCE_TESTNET_API_KEY", "")
+        self.binance_testnet_api_secret = os.getenv("BINANCE_TESTNET_API_SECRET", "")
+        
+        # Telegram credentials
         self.telegram_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
         self.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
 
