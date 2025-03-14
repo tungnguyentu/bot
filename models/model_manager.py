@@ -37,22 +37,46 @@ class ModelManager:
         """Load existing models or create new ones if they don't exist"""
         xgb_path = os.path.join(self.config.model_dir, f"{self.config.prediction_model_name}.json")
         scaler_path = os.path.join(self.config.model_dir, "feature_scaler.pkl")
+        rl_path = os.path.join(self.config.model_dir, f"{self.config.rl_model_name}.zip")
         
         # Try to load XGBoost model
         if os.path.exists(xgb_path):
-            logger.info("Loading existing XGBoost model...")
-            self.xgb_model = xgb.Booster()
-            self.xgb_model.load_model(xgb_path)
+            logger.info(f"Loading existing XGBoost model from {xgb_path}...")
+            try:
+                self.xgb_model = xgb.Booster()
+                self.xgb_model.load_model(xgb_path)
+                logger.info("XGBoost model loaded successfully")
+            except Exception as e:
+                logger.error(f"Failed to load XGBoost model: {e}")
+                self.xgb_model = None
         else:
-            logger.info("Creating new XGBoost model...")
+            logger.info("No existing XGBoost model found, will train a new one")
             self.xgb_model = None
         
         # Try to load feature scaler
         if os.path.exists(scaler_path):
-            logger.info("Loading feature scaler...")
-            self.scaler = joblib.load(scaler_path)
+            logger.info(f"Loading feature scaler from {scaler_path}...")
+            try:
+                self.scaler = joblib.load(scaler_path)
+                logger.info("Feature scaler loaded successfully")
+            except Exception as e:
+                logger.error(f"Failed to load feature scaler: {e}")
+                self.scaler = StandardScaler()
         
-        # For the RL model, we'll check if it exists when we need it
+        # Try to load RL model
+        if os.path.exists(rl_path):
+            logger.info(f"Loading existing RL model from {rl_path}...")
+            try:
+                # Create a dummy environment for loading the model
+                dummy_env = DummyVecEnv([lambda: TradingEnvironment(pd.DataFrame({col: [0] for col in self.features}), self.config)])
+                self.rl_model = PPO.load(rl_path, env=dummy_env)
+                logger.info("RL model loaded successfully")
+            except Exception as e:
+                logger.error(f"Failed to load RL model: {e}")
+                self.rl_model = None
+        else:
+            logger.info("No existing RL model found, will train a new one")
+            self.rl_model = None
     
     def prepare_features(self, df):
         """Prepare features for model training or prediction"""
@@ -177,11 +201,18 @@ class ModelManager:
             
             # Create or load model
             rl_path = os.path.join(self.config.model_dir, f"{self.config.rl_model_name}")
+            rl_zip_path = f"{rl_path}.zip"
             
-            if os.path.exists(rl_path + ".zip"):
-                logger.info("Loading existing PPO model...")
-                self.rl_model = PPO.load(rl_path, env=env)
-            else:
+            if os.path.exists(rl_zip_path):
+                logger.info(f"Loading existing PPO model from {rl_zip_path}...")
+                try:
+                    self.rl_model = PPO.load(rl_path, env=env)
+                    logger.info("Existing PPO model loaded for further training")
+                except Exception as e:
+                    logger.error(f"Error loading existing model, creating new one: {e}")
+                    self.rl_model = None
+            
+            if self.rl_model is None:
                 logger.info("Creating new PPO model...")
                 # Configure PPO with smaller network and parameters to prevent NaN issues
                 policy_kwargs = dict(
@@ -210,7 +241,21 @@ class ModelManager:
             )
             
             # Save final model
-            self.rl_model.save(rl_path)
+            try:
+                save_path = os.path.join(self.config.model_dir, f"{self.config.rl_model_name}")
+                self.rl_model.save(save_path)
+                logger.info(f"RL model saved to {save_path}.zip")
+                
+                # Verify the file was created
+                if os.path.exists(f"{save_path}.zip"):
+                    logger.info(f"Verified: RL model file exists at {save_path}.zip")
+                    # Try to reload it as a test
+                    test_model = PPO.load(save_path)
+                    logger.info("RL model reload test successful")
+                else:
+                    logger.error(f"RL model file not found at {save_path}.zip after saving")
+            except Exception as e:
+                logger.error(f"Error saving RL model: {e}", exc_info=True)
             
             logger.info("RL model training completed")
             
@@ -256,6 +301,11 @@ class ModelManager:
         try:
             if self.rl_model is None:
                 logger.warning("RL model not trained yet. Using default action (do nothing).")
+                # Check if the model file exists but wasn't loaded properly
+                rl_path = os.path.join(self.config.model_dir, f"{self.config.rl_model_name}.zip")
+                if os.path.exists(rl_path):
+                    logger.error(f"RL model file exists at {rl_path} but couldn't be loaded. Try deleting it and retraining.")
+                    
                 return 0  # No action
             
             # Clean input data
@@ -270,14 +320,18 @@ class ModelManager:
             # Get observation
             obs = env.get_observation()
             
+            # Log info about the observation and model
+            logger.debug(f"Observation shape: {obs.shape}, dtype: {obs.dtype}")
+            
             # Check for NaN or infinite values in a safe way
             for i in range(len(obs)):
                 if not np.isfinite(float(obs[i])):
-                    logger.warning(f"Non-finite value detected in observation, using default action")
+                    logger.warning(f"Non-finite value detected in observation at index {i}, using default action")
                     return 0
             
             # Get action from model
             action, _ = self.rl_model.predict(obs, deterministic=True)
+            logger.debug(f"Model predicted action: {action}")
             
             return action
             
