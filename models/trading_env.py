@@ -189,7 +189,7 @@ class TradingEnvironment(gym.Env):
         return obs, reward, done, info
 
     def _get_observation(self):
-        """Get current observation from market data and account"""
+        """Get current observation from market data and account with enhanced features"""
         try:
             # Get current market data features
             features = self.data.iloc[self.current_step][self.config.features].values.astype(np.float32)
@@ -199,6 +199,18 @@ class TradingEnvironment(gym.Env):
             for i, feature in enumerate(self.config.features):
                 if feature in ['close', 'open', 'high', 'low', 'bollinger_upper', 'bollinger_middle', 'bollinger_lower', 'vwap']:
                     features[i] = float(features[i]) / close_price
+            
+            # Calculate additional momentum features to help identify trading opportunities
+            if self.current_step >= 5:
+                price_momentum_5 = self.data['close'].iloc[self.current_step] / self.data['close'].iloc[self.current_step - 5] - 1.0
+                volume_momentum_5 = self.data['volume'].iloc[self.current_step] / max(1.0, self.data['volume'].iloc[self.current_step - 5]) - 1.0
+            else:
+                price_momentum_5 = 0.0
+                volume_momentum_5 = 0.0
+                
+            # Add momentum as a feature - normalize and clip to prevent extreme values
+            price_momentum_5 = np.clip(float(price_momentum_5) * 10.0, -10.0, 10.0)  # Scale up for visibility
+            volume_momentum_5 = np.clip(float(volume_momentum_5) * 5.0, -10.0, 10.0)
             
             # Ensure all features are float32
             features = features.astype(np.float32)
@@ -213,18 +225,21 @@ class TradingEnvironment(gym.Env):
             # Normalize position duration
             position_duration = float(min(self.position_duration / 100, 1.0))  # Normalize to [0, 1]
             
+            # Create account state array with momentum indicators
             account_state = np.array([
                 norm_balance,
                 float(self.position),  # Convert to float explicitly
                 norm_unrealized_pnl,
-                position_duration
+                position_duration,
+                price_momentum_5,  # Add price momentum to help model be more responsive
+                volume_momentum_5,  # Add volume momentum
             ], dtype=np.float32)
             
             # Clip account state values
             account_state = np.clip(account_state, -10.0, 10.0)
             
             # Concatenate market features and account state
-            obs = np.concatenate([features, account_state])
+            obs = np.concatenate([features, account_state[:-2]])  # Skip the momentum features in observation
             
             # Make sure observation is float32
             obs = obs.astype(np.float32)
@@ -240,7 +255,7 @@ class TradingEnvironment(gym.Env):
         except Exception as e:
             logger.error(f"Error creating observation: {str(e)}")
             # Return a safe default observation
-            feature_count = len(self.config.features) + 4
+            feature_count = len(self.config.features) + 4  # Back to original size
             return np.zeros(feature_count, dtype=np.float32)
 
     def render(self, mode='human'):

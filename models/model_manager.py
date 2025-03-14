@@ -264,10 +264,10 @@ class ModelManager:
             raise
     
     def predict_direction(self, market_data):
-        """Predict price direction using XGBoost model"""
+        """Predict price direction using XGBoost model with increased sensitivity"""
         if self.xgb_model is None:
             logger.warning("XGBoost model not trained yet. Using random prediction.")
-            return np.random.choice([0, 1])
+            return np.random.choice([0, 1], p=[0.45, 0.55])  # Slight bullish bias
         
         # Clean input data
         market_data = self._preprocess_data(market_data)
@@ -291,13 +291,19 @@ class ModelManager:
         # Create DMatrix
         dmatrix = xgb.DMatrix(features_scaled)
         
-        # Get prediction
+        # Get prediction with modified threshold for more trades
         prediction = self.xgb_model.predict(dmatrix)[0]
         
-        return prediction > 0.5  # Return True if probability > 0.5
-    
+        # Apply trading sensitivity from config to adjust threshold
+        # Lower threshold = more trades (default 0.5)
+        threshold = 0.5 - ((self.config.trading_sensitivity - 0.5) * 0.2)
+        
+        return prediction > threshold  # Lower threshold for more trades
+
     def get_trading_action(self, market_data, account_state):
-        """Get trading action from the RL model"""
+        """Get trading action with increased sensitivity for more frequency"""
+        # ...existing code that checks for model existence and preprocesses data...
+        
         try:
             if self.rl_model is None:
                 logger.warning("RL model not trained yet. Using default action (do nothing).")
@@ -306,7 +312,10 @@ class ModelManager:
                 if os.path.exists(rl_path):
                     logger.error(f"RL model file exists at {rl_path} but couldn't be loaded. Try deleting it and retraining.")
                     
-                return 0  # No action
+                # Generate random actions occasionally to increase trade frequency
+                if np.random.random() < self.config.trading_sensitivity * 0.3:
+                    return np.random.choice([0, 1, 2, 3], p=[0.25, 0.25, 0.25, 0.25])
+                return 0
             
             # Clean input data
             market_data = self._preprocess_data(market_data)
@@ -320,17 +329,24 @@ class ModelManager:
             # Get observation
             obs = env.get_observation()
             
-            # Log info about the observation and model
-            logger.debug(f"Observation shape: {obs.shape}, dtype: {obs.dtype}")
-            
             # Check for NaN or infinite values in a safe way
             for i in range(len(obs)):
                 if not np.isfinite(float(obs[i])):
                     logger.warning(f"Non-finite value detected in observation at index {i}, using default action")
                     return 0
             
-            # Get action from model
-            action, _ = self.rl_model.predict(obs, deterministic=True)
+            # Get action from model 
+            action, _ = self.rl_model.predict(obs, deterministic=False)  # Use stochastic predictions for more variety
+            
+            # Sometimes suggest alternative actions to increase trade frequency
+            # Higher trading_sensitivity = more likely to override with a trading action
+            if action == 0 and np.random.random() < self.config.trading_sensitivity * 0.4:
+                # If we have no position and model says do nothing, occasionally suggest opening one
+                if account_state['position'] == 0:
+                    # 50/50 chance for long/short
+                    action = np.random.choice([2, 3])
+                    logger.debug(f"Sensitivity override: suggested action {action} to increase trade frequency")
+            
             logger.debug(f"Model predicted action: {action}")
             
             return action

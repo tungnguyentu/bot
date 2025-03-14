@@ -322,18 +322,79 @@ class TradingBot:
         if self._check_drawdown():
             return False
         
-        # Check VWAP condition to avoid trading in consolidation
+        # VWAP deviation threshold reduced from 0.5% to 0.2% to increase trading opportunities
         latest_data = self.data_collector.get_latest_data(limit=5)
         current_price = float(self.client.get_symbol_ticker(symbol=symbol)['price'])
         vwap = latest_data['vwap'].iloc[-1]
         
-        # If price is too close to VWAP (within 0.5%), avoid trading
-        if abs(current_price - vwap) / vwap < 0.005:
-            logger.info(f"Price too close to VWAP, avoiding trade")
+        # More relaxed VWAP condition
+        if abs(current_price - vwap) / vwap < 0.002:  # Reduced from 0.005 to 0.002
+            logger.info(f"Price very close to VWAP, avoiding trade")
             return False
             
         return True
+    
+    def _execute_trading_strategy(self, market_data, symbol, account_state):
+        """Enhanced trading strategy with multiple signals"""
+        # Get main action from the RL model
+        primary_action = self.model_manager.get_trading_action(market_data, account_state)
         
+        # Get price direction prediction from XGBoost model
+        price_direction = self.model_manager.predict_direction(market_data)
+        
+        # Get technical indicators
+        rsi = market_data['rsi'].iloc[-1]
+        macd = market_data['macd'].iloc[-1]
+        macd_signal = market_data['macd_signal'].iloc[-1]
+        bb_upper = market_data['bollinger_upper'].iloc[-1]
+        bb_lower = market_data['bollinger_lower'].iloc[-1]
+        current_price = market_data['close'].iloc[-1]
+        adx = market_data['adx'].iloc[-1]
+        
+        # Calculate supplementary signals
+        price_above_upper_bb = current_price > bb_upper
+        price_below_lower_bb = current_price < bb_lower
+        macd_crossover = macd > macd_signal
+        macd_crossunder = macd < macd_signal
+        strong_trend = adx > 25
+        
+        # Combine signals for more frequent trading
+        if primary_action == 0:  # If model suggests no action
+            # Look for additional entry opportunities
+            if symbol not in self.active_positions:
+                # Long entry conditions
+                if (price_direction and (price_below_lower_bb or (rsi < 30 and macd_crossover))):
+                    logger.info(f"Technical indicators suggest LONG position for {symbol}")
+                    return 2  # Open long
+                
+                # Short entry conditions
+                elif (not price_direction and (price_above_upper_bb or (rsi > 70 and macd_crossunder))):
+                    logger.info(f"Technical indicators suggest SHORT position for {symbol}")
+                    return 3  # Open short
+            
+            # Look for additional exit opportunities
+            elif symbol in self.active_positions:
+                position = self.active_positions[symbol]
+                entry_price = position['entry_price']
+                
+                # Check if we've hit take profit or stop loss
+                if position['side'] == 'LONG':
+                    take_profit = entry_price * (1 + self.config.take_profit_pct)
+                    stop_loss = entry_price * (1 - self.config.stop_loss_pct)
+                    
+                    if current_price >= take_profit or current_price <= stop_loss:
+                        logger.info(f"TP/SL triggered for LONG position on {symbol}")
+                        return 1  # Close position
+                else:
+                    take_profit = entry_price * (1 - self.config.take_profit_pct)
+                    stop_loss = entry_price * (1 + self.config.stop_loss_pct)
+                    
+                    if current_price <= take_profit or current_price >= stop_loss:
+                        logger.info(f"TP/SL triggered for SHORT position on {symbol}")
+                        return 1  # Close position
+        
+        return primary_action
+    
     def run(self):
         """Main bot loop"""
         logger.info(f"Starting trading bot loop in {'test' if self.is_test_mode else 'live'} mode")
@@ -355,25 +416,25 @@ class TradingBot:
                     account_state = {
                         'balance': self.current_balance,
                         'position': 1 if symbol in self.active_positions and self.active_positions[symbol]['side'] == 'LONG' else 
-                                   -1 if symbol in self.active_positions and self.active_positions[symbol]['side'] == 'SHORT' else 0,
+                                  -1 if symbol in self.active_positions and self.active_positions[symbol]['side'] == 'SHORT' else 0,
                         'position_price': self.active_positions.get(symbol, {}).get('entry_price', 0),
                         'position_size_usd': self.active_positions.get(symbol, {}).get('size', 0) * 
-                                            self.active_positions.get(symbol, {}).get('entry_price', 0)
+                                           self.active_positions.get(symbol, {}).get('entry_price', 0)
                     }
                     
-                    # Get trading action from model
-                    action = self.model_manager.get_trading_action(market_data, account_state)
+                    # Get trading action from enhanced strategy
+                    action = self._execute_trading_strategy(market_data, symbol, account_state)
                     
                     # Map action to trading decision
                     # action: 0 (do nothing), 1 (close position), 2 (open long), 3 (open short)
                     if action == 1 and symbol in self.active_positions:
                         # Close position
-                        logger.info(f"Model suggests closing position for {symbol}")
+                        logger.info(f"Strategy suggests closing position for {symbol}")
                         self._close_position(symbol)
                         
                     elif action == 2 and self._can_open_new_position(symbol):
                         # Open long position
-                        logger.info(f"Model suggests opening LONG position for {symbol}")
+                        logger.info(f"Strategy suggests opening LONG position for {symbol}")
                         quantity, price = self._calculate_position_size(symbol)
                         
                         if quantity > 0:
@@ -381,23 +442,22 @@ class TradingBot:
                             
                     elif action == 3 and self._can_open_new_position(symbol):
                         # Open short position
-                        logger.info(f"Model suggests opening SHORT position for {symbol}")
+                        logger.info(f"Strategy suggests opening SHORT position for {symbol}")
                         quantity, price = self._calculate_position_size(symbol)
                         
                         if quantity > 0:
                             self._execute_trade(symbol, 'SHORT', quantity)
                     
-                    # Wait before next iteration
-                    # Adjust based on timeframe
-                    sleep_time = 60  # 1 minute default
+                    # Reduced wait times between checks to be more responsive
+                    sleep_time = 30  # Default 30 seconds (down from 60)
                     if self.data_collector.interval == '1m':
-                        sleep_time = 15
+                        sleep_time = 10  # Down from 15
                     elif self.data_collector.interval == '5m':
-                        sleep_time = 60
+                        sleep_time = 30  # Down from 60
                     elif self.data_collector.interval == '15m':
-                        sleep_time = 180
+                        sleep_time = 90  # Down from 180
                     elif self.data_collector.interval == '1h':
-                        sleep_time = 600
+                        sleep_time = 300  # Down from 600
                     
                     logger.info(f"Sleeping for {sleep_time} seconds...")
                     time.sleep(sleep_time)

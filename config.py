@@ -27,11 +27,18 @@ class Config:
         self.stop_loss_atr_multiplier = 2.0
         self.take_profit_atr_multiplier = 3.0
         self.position_size_percent = 0.02  # 2% of balance per trade
+        
+        # Fixed take profit and stop loss percentages (for faster trading)
+        self.take_profit_pct = 0.015  # 1.5% take profit
+        self.stop_loss_pct = 0.01     # 1% stop loss
 
         # Model parameters
         self.model_dir = "models"
         self.rl_model_name = "ppo_trading_model"
         self.prediction_model_name = "xgb_prediction_model"
+        
+        # Trading frequency enhancement
+        self.trading_sensitivity = 0.7  # Higher value = more trades (0.0 to 1.0)
 
         # Features for the model
         self.features = [
