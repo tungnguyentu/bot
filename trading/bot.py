@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 import traceback
+from utils.market_utils import round_to_step_size, validate_and_format_order, get_quantity_precision
 
 logger = logging.getLogger(__name__)
 
@@ -112,17 +113,31 @@ class TradingBot:
             return {}
     
     def _execute_trade(self, symbol, side, quantity):
-        """Execute a trade on Binance"""
+        """Execute a trade on Binance with proper precision handling"""
         try:
+            # Get symbol info for proper formatting
+            symbol_info = self.client.get_symbol_info(symbol)
+            
+            # Validate and format the quantity
+            formatted_qty, error = validate_and_format_order(symbol_info, side, quantity)
+            
+            if formatted_qty is None:
+                logger.error(f"Invalid order quantity: {quantity} for {symbol}: {error}")
+                self.telegram.send_message(f"⚠️ Invalid order quantity: {quantity} for {symbol}: {error}")
+                return False
+            
             # Prepare order parameters
             order_side = 'BUY' if side == 'LONG' else 'SELL'
+            
+            # Log the exact order we're going to place
+            logger.info(f"Placing {order_side} order for {formatted_qty} {symbol}")
             
             # Execute market order
             order = self.client.futures_create_order(
                 symbol=symbol,
                 side=order_side,
                 type='MARKET',
-                quantity=quantity
+                quantity=formatted_qty
             )
             
             logger.info(f"Order executed: {order}")
@@ -135,7 +150,7 @@ class TradingBot:
                 f"✅ *{'TEST ' if self.is_test_mode else ''}TRADE EXECUTED*\n"
                 f"Symbol: {symbol}\n"
                 f"Side: {side}\n"
-                f"Quantity: {quantity}\n"
+                f"Quantity: {formatted_qty}\n"
                 f"Price: {current_price}\n"
                 f"Order ID: {order['orderId']}\n"
                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
@@ -144,7 +159,7 @@ class TradingBot:
             # Add to active positions
             self.active_positions[symbol] = {
                 'side': side,
-                'size': quantity,
+                'size': float(formatted_qty),
                 'entry_price': current_price,
                 'mark_price': current_price,
                 'pnl': 0.0,
@@ -159,7 +174,7 @@ class TradingBot:
             return False
     
     def _close_position(self, symbol):
-        """Close an existing position"""
+        """Close an existing position with proper precision handling"""
         if symbol not in self.active_positions:
             logger.warning(f"No active position for {symbol} to close")
             return False
@@ -167,15 +182,29 @@ class TradingBot:
         position = self.active_positions[symbol]
         
         try:
+            # Get symbol info for proper formatting
+            symbol_info = self.client.get_symbol_info(symbol)
+            
             # Determine order side (opposite of position side)
             order_side = 'SELL' if position['side'] == 'LONG' else 'BUY'
+            
+            # Validate and format the quantity
+            formatted_qty, error = validate_and_format_order(symbol_info, order_side, position['size'])
+            
+            if formatted_qty is None:
+                logger.error(f"Invalid order quantity for closing position: {position['size']} for {symbol}: {error}")
+                self.telegram.send_message(f"⚠️ Error closing position: {error}")
+                return False
+            
+            # Log the exact order we're going to place
+            logger.info(f"Closing position with {order_side} order for {formatted_qty} {symbol}")
             
             # Execute market order to close
             order = self.client.futures_create_order(
                 symbol=symbol,
                 side=order_side,
                 type='MARKET',
-                quantity=position['size'],
+                quantity=formatted_qty,
                 reduceOnly=True
             )
             
@@ -220,47 +249,8 @@ class TradingBot:
             self.telegram.send_message(f"⚠️ Failed to close position: {str(e)}")
             return False
     
-    def _check_daily_reset(self):
-        """Check if we need to reset daily metrics"""
-        now = datetime.now()
-        if (now - self.daily_start_time).days > 0:
-            # It's a new day, send summary and reset
-            daily_summary = (
-                f"📊 *Daily Trading Summary*\n"
-                f"Date: {self.daily_start_time.strftime('%Y-%m-%d')}\n"
-                f"PnL: {self.daily_pnl:.2f} USDT\n"
-                f"Trades: {self.daily_trades}\n"
-                f"Win Rate: {self._calculate_win_rate():.1f}%\n"
-                f"Current Balance: {self.current_balance:.2f} USDT\n"
-                f"Daily Return: {(self.daily_pnl / self.start_balance) * 100:.2f}%"
-            )
-            
-            self.telegram.send_message(daily_summary)
-            
-            # Reset daily metrics
-            self.daily_pnl = 0
-            self.daily_trades = 0
-            self.daily_start_time = now
-    
-    def _check_drawdown(self):
-        """Check if we've exceeded the max daily drawdown"""
-        # Calculate drawdown as percentage of starting balance
-        drawdown_pct = abs(self.daily_pnl) / self.start_balance if self.daily_pnl < 0 else 0
-        
-        if drawdown_pct > self.config.max_daily_drawdown:
-            logger.warning(f"Max daily drawdown exceeded: {drawdown_pct:.2%}")
-            self.telegram.send_message(
-                f"⚠️ *RISK ALERT: Max Daily Drawdown Exceeded*\n"
-                f"Current Drawdown: {drawdown_pct:.2%}\n"
-                f"Max Allowed: {self.config.max_daily_drawdown:.2%}\n"
-                f"Trading has been paused for today."
-            )
-            return True
-        
-        return False
-    
     def _calculate_position_size(self, symbol):
-        """Calculate position size based on risk parameters"""
+        """Calculate position size based on risk parameters with proper precision handling"""
         try:
             # Get current price
             current_price = float(self.client.get_symbol_ticker(symbol=symbol)['price'])
@@ -279,23 +269,69 @@ class TradingBot:
             position_size_usd = risk_amount * self.config.initial_leverage
             position_size_qty = position_size_usd / current_price
             
-            # Round to appropriate precision
+            # Get symbol info for precision rules
             symbol_info = self.client.get_symbol_info(symbol)
-            precision = 0
+            if not symbol_info:
+                logger.error(f"Could not get symbol info for {symbol}")
+                return 0, 0
+                
+            # Find the LOT_SIZE filter for quantity precision
+            step_size = None
+            min_qty = None
+            min_notional = None
             
             for filter in symbol_info['filters']:
                 if filter['filterType'] == 'LOT_SIZE':
                     step_size = float(filter['stepSize'])
-                    precision = len(str(step_size).split('.')[1]) if '.' in str(step_size) else 0
-                    break
+                    min_qty = float(filter['minQty'])
+                elif filter['filterType'] == 'MIN_NOTIONAL':
+                    min_notional = float(filter['minNotional'])
             
-            position_size_qty = round(position_size_qty, precision)
+            if step_size is None:
+                logger.error("Could not find LOT_SIZE filter for symbol")
+                return 0, 0
+                
+            # Round quantity to correct step size
+            position_size_qty = round_to_step_size(position_size_qty, step_size)
             
+            # Check minimum quantity
+            if position_size_qty < min_qty:
+                logger.warning(f"Calculated position size {position_size_qty} is below minimum {min_qty}")
+                position_size_qty = min_qty
+            
+            # Check minimum notional value
+            if min_notional and position_size_qty * current_price < min_notional:
+                logger.warning(f"Order value {position_size_qty * current_price} is below minimum notional {min_notional}")
+                # Adjust position size to meet minimum notional
+                position_size_qty = round_to_step_size(min_notional / current_price, step_size)
+                if position_size_qty < min_qty:
+                    logger.error(f"Cannot meet minimum notional {min_notional} with minimum quantity {min_qty}")
+                    return 0, 0
+            
+            logger.info(f"Calculated position size: {position_size_qty} {symbol} (precision based on step size: {step_size})")
             return position_size_qty, current_price
+            
         except Exception as e:
             logger.error(f"Error calculating position size: {e}")
             traceback.print_exc()
             return 0, 0
+    
+    def _check_drawdown(self):
+        """Check if we've exceeded the max daily drawdown"""
+        # Calculate drawdown as percentage of starting balance
+        drawdown_pct = abs(self.daily_pnl) / self.start_balance if self.daily_pnl < 0 else 0
+        
+        if drawdown_pct > self.config.max_daily_drawdown:
+            logger.warning(f"Max daily drawdown exceeded: {drawdown_pct:.2%}")
+            self.telegram.send_message(
+                f"⚠️ *RISK ALERT: Max Daily Drawdown Exceeded*\n"
+                f"Current Drawdown: {drawdown_pct:.2%}\n"
+                f"Max Allowed: {self.config.max_daily_drawdown:.2%}\n"
+                f"Trading has been paused for today."
+            )
+            return True
+        
+        return False
     
     def _calculate_win_rate(self):
         """Calculate win rate from today's trades"""
@@ -331,7 +367,7 @@ class TradingBot:
         if abs(current_price - vwap) / vwap < 0.002:  # Reduced from 0.005 to 0.002
             logger.info(f"Price very close to VWAP, avoiding trade")
             return False
-            
+        
         return True
     
     def _execute_trading_strategy(self, market_data, symbol, account_state):
@@ -415,11 +451,9 @@ class TradingBot:
                     # Get current account state for the RL model
                     account_state = {
                         'balance': self.current_balance,
-                        'position': 1 if symbol in self.active_positions and self.active_positions[symbol]['side'] == 'LONG' else 
-                                  -1 if symbol in self.active_positions and self.active_positions[symbol]['side'] == 'SHORT' else 0,
+                        'position': 1 if symbol in self.active_positions and self.active_positions[symbol]['side'] == 'LONG' else -1 if symbol in self.active_positions and self.active_positions[symbol]['side'] == 'SHORT' else 0,
                         'position_price': self.active_positions.get(symbol, {}).get('entry_price', 0),
-                        'position_size_usd': self.active_positions.get(symbol, {}).get('size', 0) * 
-                                           self.active_positions.get(symbol, {}).get('entry_price', 0)
+                        'position_size_usd': self.active_positions.get(symbol, {}).get('size', 0) * self.active_positions.get(symbol, {}).get('entry_price', 0)
                     }
                     
                     # Get trading action from enhanced strategy
@@ -431,41 +465,38 @@ class TradingBot:
                         # Close position
                         logger.info(f"Strategy suggests closing position for {symbol}")
                         self._close_position(symbol)
-                        
                     elif action == 2 and self._can_open_new_position(symbol):
                         # Open long position
-                        logger.info(f"Strategy suggests opening LONG position for {symbol}")
                         quantity, price = self._calculate_position_size(symbol)
-                        
                         if quantity > 0:
+                            logger.info(f"Strategy suggests opening LONG position for {symbol}")
                             self._execute_trade(symbol, 'LONG', quantity)
-                            
                     elif action == 3 and self._can_open_new_position(symbol):
                         # Open short position
-                        logger.info(f"Strategy suggests opening SHORT position for {symbol}")
                         quantity, price = self._calculate_position_size(symbol)
-                        
                         if quantity > 0:
+                            logger.info(f"Strategy suggests opening SHORT position for {symbol}")
                             self._execute_trade(symbol, 'SHORT', quantity)
                     
                     # Reduced wait times between checks to be more responsive
-                    sleep_time = 30  # Default 30 seconds (down from 60)
                     if self.data_collector.interval == '1m':
-                        sleep_time = 10  # Down from 15
+                        sleep_time = 30  # Default 30 seconds (down from 60)
                     elif self.data_collector.interval == '5m':
-                        sleep_time = 30  # Down from 60
+                        sleep_time = 10  # Down from 15
                     elif self.data_collector.interval == '15m':
-                        sleep_time = 90  # Down from 180
+                        sleep_time = 30  # Down from 60
                     elif self.data_collector.interval == '1h':
+                        sleep_time = 90  # Down from 180
+                    else:
                         sleep_time = 300  # Down from 600
                     
                     logger.info(f"Sleeping for {sleep_time} seconds...")
                     time.sleep(sleep_time)
-                    
+                
                 except Exception as e:
                     logger.error(f"Error in trading loop: {e}")
-                    traceback.print_exc()
                     self.telegram.send_message(f"⚠️ Error in trading loop: {str(e)}")
+                    traceback.print_exc()
                     time.sleep(60)  # Sleep before retrying
         
         except KeyboardInterrupt:
