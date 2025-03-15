@@ -321,7 +321,7 @@ class TradingBot:
         # Calculate drawdown as percentage of starting balance
         drawdown_pct = abs(self.daily_pnl) / self.start_balance if self.daily_pnl < 0 else 0
         
-        if drawdown_pct > self.config.max_daily_drawdown:
+        if (drawdown_pct > self.config.max_daily_drawdown):
             logger.warning(f"Max daily drawdown exceeded: {drawdown_pct:.2%}")
             self.telegram.send_message(
                 f"⚠️ *RISK ALERT: Max Daily Drawdown Exceeded*\n"
