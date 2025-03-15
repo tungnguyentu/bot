@@ -72,23 +72,28 @@ def validate_and_format_order(symbol_info, side, quantity):
                         logger.warning(f"Order notional value {notional_value} is below minimum {min_notional}")
                         return None, f"Order value too small"
         
-        # Fix: Format with correct precision and ensure it's a string for Binance API
-        formatted_qty_str = f"{{:.{precision}f}}".format(formatted_qty)
-        
-        # Remove trailing zeros (but keep the required precision)
-        if '.' in formatted_qty_str:
-            parts = formatted_qty_str.split('.')
-            whole_part = parts[0]
-            decimal_part = parts[1].ljust(precision, '0')[:precision]  # Ensure exact precision
-            formatted_qty_str = f"{whole_part}.{decimal_part}"
+        # Format quantity to correct string representation with exact precision
+        # This is crucial for Binance API which is strict about precision
+        if precision == 0:
+            # For whole number quantities (precision 0), return as integer string
+            formatted_qty_str = str(int(formatted_qty))
+        else:
+            # For decimal quantities, ensure exact number of decimal places
+            formatted_qty_str = f"{formatted_qty:.{precision}f}"
             
-            # Trim unnecessary trailing zeros only if precision allows
-            if decimal_part.rstrip('0') != '':
-                formatted_qty_str = f"{whole_part}.{decimal_part.rstrip('0')}"
-            elif precision == 0:
-                formatted_qty_str = whole_part
+            # Check if the formatted string has the correct number of decimal places
+            # If not, truncate or pad with zeros as needed
+            parts = formatted_qty_str.split('.')
+            if len(parts) > 1:
+                decimal_part = parts[1]
+                if len(decimal_part) > precision:
+                    # Truncate if we have too many decimal places
+                    formatted_qty_str = f"{parts[0]}.{decimal_part[:precision]}"
+                elif len(decimal_part) < precision:
+                    # Pad with zeros if we have too few decimal places
+                    formatted_qty_str = f"{parts[0]}.{decimal_part.ljust(precision, '0')}"
         
-        logger.info(f"Formatted quantity: {quantity} -> {formatted_qty_str} (precision: {precision})")
+        logger.info(f"Formatted quantity: {quantity} -> {formatted_qty_str} (precision: {precision}, step size: {step_size})")
         
         # Return the formatted string quantity for direct use in API calls
         return formatted_qty_str, None
