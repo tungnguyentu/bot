@@ -1,6 +1,7 @@
 import requests
 import logging
 import time
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,11 @@ class TelegramNotifier:
             logger.info(f"Telegram notification would send: {message}")
             return False
         
+        # Clean up the message to avoid Markdown parsing errors
+        if parse_mode == 'Markdown':
+            # Escape Markdown special characters
+            message = self._escape_markdown(message)
+        
         url = self.base_url + "sendMessage"
         data = {
             "chat_id": self.chat_id,
@@ -38,13 +44,26 @@ class TelegramNotifier:
                     return True
                 else:
                     logger.warning(f"Failed to send Telegram message: {response.status_code} {response.text}")
-                    time.sleep(1)
+                    # If it's a parsing error, try without parse_mode
+                    if 'parse entities' in response.text and attempt == 0:
+                        logger.info("Retrying without parse_mode due to parsing error")
+                        data["parse_mode"] = ""
+                    else:
+                        time.sleep(1)
             except Exception as e:
                 logger.error(f"Error sending Telegram message: {e}")
                 time.sleep(1)
         
         return False
     
+    def _escape_markdown(self, text):
+        """Escape Markdown special characters to prevent parsing errors"""
+        # Characters to escape: _*[]()~`>#+-=|{}.!
+        special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+        for char in special_chars:
+            text = text.replace(char, '\\' + char)
+        return text
+
     def send_photo(self, photo_path, caption=None, parse_mode='Markdown', retry=3):
         """Send a photo with optional caption to the configured Telegram chat"""
         if not self.enabled:

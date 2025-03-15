@@ -431,6 +431,28 @@ class TradingBot:
         
         return primary_action
     
+    def _check_daily_reset(self):
+        """Check if we need to reset daily metrics"""
+        now = datetime.now()
+        if (now - self.daily_start_time).days > 0:
+            # It's a new day, send summary and reset
+            daily_summary = (
+                f"📊 Daily Trading Summary\n"
+                f"Date: {self.daily_start_time.strftime('%Y-%m-%d')}\n"
+                f"PnL: {self.daily_pnl:.2f} USDT\n"
+                f"Trades: {self.daily_trades}\n"
+                f"Win Rate: {self._calculate_win_rate():.1f}%\n"
+                f"Current Balance: {self.current_balance:.2f} USDT\n"
+                f"Daily Return: {(self.daily_pnl / self.start_balance) * 100:.2f}%"
+            )
+            
+            self.telegram.send_message(daily_summary)
+            
+            # Reset daily metrics
+            self.daily_pnl = 0
+            self.daily_trades = 0
+            self.daily_start_time = now
+
     def run(self):
         """Main bot loop"""
         logger.info(f"Starting trading bot loop in {'test' if self.is_test_mode else 'live'} mode")
