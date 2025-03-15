@@ -132,7 +132,7 @@ class TradingBot:
             # Log the exact order we're going to place
             logger.info(f"Placing {order_side} order for {formatted_qty} {symbol}")
             
-            # Execute market order
+            # Execute market order - formatted_qty is already a string with correct precision
             order = self.client.futures_create_order(
                 symbol=symbol,
                 side=order_side,
@@ -156,7 +156,7 @@ class TradingBot:
                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             )
             
-            # Add to active positions
+            # Add to active positions - convert formatted_qty back to float for internal tracking
             self.active_positions[symbol] = {
                 'side': side,
                 'size': float(formatted_qty),
@@ -199,7 +199,7 @@ class TradingBot:
             # Log the exact order we're going to place
             logger.info(f"Closing position with {order_side} order for {formatted_qty} {symbol}")
             
-            # Execute market order to close
+            # Execute market order to close - formatted_qty is already a string with correct precision
             order = self.client.futures_create_order(
                 symbol=symbol,
                 side=order_side,
