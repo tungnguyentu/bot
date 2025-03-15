@@ -72,15 +72,26 @@ def validate_and_format_order(symbol_info, side, quantity):
                         logger.warning(f"Order notional value {notional_value} is below minimum {min_notional}")
                         return None, f"Order value too small"
         
-        # Format with correct precision 
-        formatted_qty = f"{{:.{precision}f}}".format(formatted_qty)
+        # Fix: Format with correct precision and ensure it's a string for Binance API
+        formatted_qty_str = f"{{:.{precision}f}}".format(formatted_qty)
         
-        # Remove trailing zeros
-        if '.' in formatted_qty:
-            formatted_qty = formatted_qty.rstrip('0').rstrip('.')
+        # Remove trailing zeros (but keep the required precision)
+        if '.' in formatted_qty_str:
+            parts = formatted_qty_str.split('.')
+            whole_part = parts[0]
+            decimal_part = parts[1].ljust(precision, '0')[:precision]  # Ensure exact precision
+            formatted_qty_str = f"{whole_part}.{decimal_part}"
             
-        # Convert back to float for internal use
-        return float(formatted_qty), None
+            # Trim unnecessary trailing zeros only if precision allows
+            if decimal_part.rstrip('0') != '':
+                formatted_qty_str = f"{whole_part}.{decimal_part.rstrip('0')}"
+            elif precision == 0:
+                formatted_qty_str = whole_part
+        
+        logger.info(f"Formatted quantity: {quantity} -> {formatted_qty_str} (precision: {precision})")
+        
+        # Return the formatted string quantity for direct use in API calls
+        return formatted_qty_str, None
         
     except Exception as e:
         logger.error(f"Error formatting order quantity: {e}")
