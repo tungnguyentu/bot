@@ -24,7 +24,7 @@ class Trader:
         self.trade_history = []  # track historical trades
         # Cache for symbol information
         self.symbol_info = {}
-        # Initial account balance to use for trading
+        # Initial account balance to use for trading (this is our margin amount)
         self.initial_balance = config.invest
         self.current_balance = config.invest
     
@@ -279,22 +279,24 @@ class Trader:
             sl_price = self._adjust_price_precision(self.config.symbol, sl_price)
             tp_price = self._adjust_price_precision(self.config.symbol, tp_price)
             
-            # Place stop loss - using STOP instead of STOP_MARKET
+            # Place stop loss using STOP_MARKET with reduceOnly=True instead of closePosition=True
             sl_order = self.client.futures_create_order(
                 symbol=self.config.symbol,
                 side=opposite_side,
-                type='STOP',  # Use 'STOP' instead of 'STOP_MARKET'
+                type='STOP_MARKET',  # Use STOP_MARKET for stop loss
                 stopPrice=sl_price,
-                closePosition=True
+                reduceOnly=True,     # Use reduceOnly instead of closePosition
+                quantity=adjusted_quantity  # Need to specify quantity when not using closePosition
             )
             
-            # Place take profit - using TAKE_PROFIT instead of TAKE_PROFIT_MARKET
+            # Place take profit using TAKE_PROFIT_MARKET with reduceOnly=True
             tp_order = self.client.futures_create_order(
                 symbol=self.config.symbol,
                 side=opposite_side,
-                type='TAKE_PROFIT',  # Use 'TAKE_PROFIT' instead of 'TAKE_PROFIT_MARKET'
+                type='TAKE_PROFIT_MARKET',  # Use TAKE_PROFIT_MARKET for take profit
                 stopPrice=tp_price,
-                closePosition=True
+                reduceOnly=True,     # Use reduceOnly instead of closePosition
+                quantity=adjusted_quantity  # Need to specify quantity when not using closePosition
             )
             
             # Track position
@@ -619,20 +621,15 @@ class Trader:
         return results
     
     def get_account_balance(self):
-        """Get the current account balance for trading."""
+        """Get the current account balance to use as margin."""
         if self.config.mode == 'backtest':
             return self.current_balance
         
         try:
-            # For futures trading
-            account_info = self.client.futures_account_balance()
-            for balance in account_info:
-                if balance['asset'] == 'USDT':
-                    # Use either the actual balance or the configured investment amount, whichever is lower
-                    actual_balance = float(balance['balance'])
-                    return min(actual_balance, self.initial_balance)
+            # For futures trading, we use our configured investment amount as the margin
+            # We don't want to use the entire Binance wallet balance
+            return self.initial_balance
             
-            return self.initial_balance  # Default to initial investment if no USDT balance found
         except BinanceAPIException as e:
             logger.error(f"Error getting account balance: {e}")
             return self.initial_balance
@@ -648,11 +645,11 @@ class Trader:
         Returns:
             Appropriate position size (as string for futures, float for backtest)
         """
-        # Get current balance
-        balance = self.get_account_balance()
+        # Get current margin balance (the invest amount is our margin)
+        margin = self.get_account_balance()
         
-        # Maximum amount to risk per trade (2% of balance)
-        max_risk_amount = balance * 0.02
+        # Maximum amount to risk per trade (2% of margin)
+        max_risk_amount = margin * 0.02
         
         # Calculate risk per unit
         risk_per_unit = abs(entry_price - sl_price)
@@ -664,12 +661,15 @@ class Trader:
             position_size = 0
             logger.warning("Risk per unit is zero or negative, setting position size to 0")
         
-        # Adjust for leverage
-        position_size = position_size * self.config.leverage
+        # Adjust for leverage - this increases our buying power
+        leveraged_position_size = position_size * self.config.leverage
         
-        # Limit position size to ensure it doesn't exceed investment amount
-        max_position_size = (balance * self.config.leverage) / entry_price
-        position_size = min(position_size, max_position_size)
+        # Calculate maximum position size based on margin and leverage
+        # Max position size = (margin * leverage) / entry_price
+        max_position_size = (margin * self.config.leverage) / entry_price
+        
+        # Use the smaller of our calculated values to ensure we don't exceed our margin
+        position_size = min(leveraged_position_size, max_position_size)
         
         # If position size is too small, return zero
         if position_size < 0.000001:
@@ -679,6 +679,6 @@ class Trader:
         # Adjust for precision - this will return a string or float depending on mode
         position_size = self._adjust_quantity_precision(self.config.symbol, position_size)
         
-        logger.info(f"Calculated position size: {position_size} based on balance: {balance}, risk: {max_risk_amount}, entry: {entry_price}, SL: {sl_price}")
+        logger.info(f"Calculated position size: {position_size} based on margin: {margin}, risk: {max_risk_amount}, entry: {entry_price}, SL: {sl_price}, leverage: {self.config.leverage}x")
         
         return position_size
