@@ -1,82 +1,89 @@
-# AI Trading Bot for Binance Futures
+# AI-Powered Trading Bot for Binance Futures
 
-An AI-powered trading bot that executes mean reversion strategies, adapts to market conditions, and optimizes trades using machine learning.
+This trading bot uses machine learning and technical indicators to generate trading signals for Binance Futures. It can operate in backtest, test (using Binance Testnet), or live trading modes.
 
 ## Features
 
-- Automated trading on Binance Futures using XGBoost and Reinforcement Learning
-- Real-time trading signals with mean reversion and trend-following strategies
-- Comprehensive backtesting framework with performance metrics
-- Risk management with dynamic ATR-based stop-loss and take-profit
-- Telegram notifications for trades and account status
-- Test mode using Binance Testnet for safe testing
+- **AI-Powered Predictions**: Uses XGBoost to predict price movements
+- **Technical Indicators**: Combines multiple indicators for signal generation
+  - Bollinger Bands (14, 2)
+  - RSI (6)
+  - MACD (5, 13, 1)
+  - VWAP
+  - ATR (14)
+- **Risk Management**: Dynamic stop-loss and take-profit levels based on ATR
+- **Multiple Modes**: Backtest, test (Binance Testnet), and live trading
+- **Telegram Notifications**: Trade signals, executions, and performance reports
 
 ## Setup
 
 1. Clone the repository
-2. Install requirements:
-   ```
-   pip install -r requirements.txt
-   ```
-3. Create a `.env` file in the project directory with your API keys:
-   ```
-   # Production API keys
-   BINANCE_API_KEY=your_binance_api_key
-   BINANCE_API_SECRET=your_binance_api_secret
-   
-   # Testnet API keys (for test mode)
-   BINANCE_TESTNET_API_KEY=your_testnet_api_key
-   BINANCE_TESTNET_API_SECRET=your_testnet_api_secret
-   
-   # Telegram settings
-   TELEGRAM_BOT_TOKEN=your_telegram_bot_token
-   TELEGRAM_CHAT_ID=your_telegram_chat_id
-   ```
-
-## Getting Binance Testnet API Keys
-
-1. Visit [Binance Futures Testnet](https://testnet.binancefuture.com/)
-2. Register for a testnet account
-3. Generate API keys from your testnet dashboard
-4. Add these keys to your `.env` file as `BINANCE_TESTNET_API_KEY` and `BINANCE_TESTNET_API_SECRET`
+2. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+3. Copy the example environment file and update it with your API keys:
+```bash
+cp .env.example .env
+```
+4. Edit the `.env` file with your Binance API keys and Telegram credentials
 
 ## Usage
 
-### Train the AI model
-```
-python main.py --mode train --symbol BTCUSDT --interval 1h
-```
+### Training the Model
 
-### Run backtest
-```
-python main.py --mode backtest --symbol BTCUSDT --interval 1h
+```bash
+python main.py --symbol SOLUSDT --mode backtest --train
 ```
 
-### Test mode (using Binance Testnet)
-```
-python main.py --mode test --symbol BTCUSDT --interval 1h
-```
+### Backtesting
 
-### Live trading mode
-```
-python main.py --mode live --symbol BTCUSDT --interval 1h
+```bash
+python main.py --symbol SOLUSDT --mode backtest
 ```
 
-## Performance Metrics
+### Test Trading (Binance Testnet)
 
-The bot evaluates performance based on:
-- Sharpe Ratio (risk-adjusted return)
-- Max Drawdown (risk exposure)
-- Win Rate (trade accuracy)
-- Profit Factor (profitability measure)
-- Expectancy (average profit per trade)
+```bash
+python main.py --symbol SOLUSDT --mode test --leverage 20
+```
 
-## Risk Management
+### Live Trading
 
-- Max Daily Drawdown: Stop trading if daily losses exceed configured threshold
-- Position Sizing: Risk a small percentage of account per trade
-- ATR-based Stop Loss: Dynamic placement based on market volatility
+```bash
+python main.py --symbol SOLUSDT --mode live --leverage 20
+```
 
-## Disclaimer
+## Command Line Arguments
 
-This software is for educational purposes only. Use at your own risk. Cryptocurrency trading involves significant risk and you can lose substantial funds. Always test thoroughly before trading with real money.
+- `--symbol`: Trading pair (default: SOLUSDT)
+- `--leverage`: Leverage to use (default: 20)
+- `--mode`: Trading mode - 'backtest', 'test', or 'live' (default: test)
+- `--interval`: Timeframe for data (default: 1h)
+- `--quantity`: Trading quantity in base asset (default: 0.1)
+- `--sl_atr_multiplier`: Stop Loss ATR multiplier (default: 1.5)
+- `--tp_atr_multiplier`: Take Profit ATR multiplier (default: 2.0)
+- `--train`: Train the model before trading
+
+## Trading Strategy
+
+The bot follows a Mean Reversion Strategy with AI validation:
+
+1. Identifies price deviations from the mean
+2. Confirms reversals with multiple technical indicators
+3. Uses AI model to validate trade signals and calculate confidence
+4. Implements dynamic risk management based on market volatility
+
+## Telegram Notifications
+
+The bot sends notifications for:
+- Trade entry (Buy/Sell, price, reason)
+- Trade exit (SL/TP hit, manual exit, reason)
+- Performance reports (PnL, win rate, max drawdown)
+
+## Warnings
+
+- Cryptocurrency trading involves significant risk
+- Always start with small position sizes
+- Test thoroughly before using with real funds
+- Past performance does not guarantee future results
