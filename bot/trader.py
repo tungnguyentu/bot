@@ -110,13 +110,26 @@ class Trader:
         
         try:
             # Get exchange information
-            exchange_info = self.client.get_exchange_info()
-            
-            # Find the symbol information
-            for sym_info in exchange_info['symbols']:
-                if sym_info['symbol'] == symbol:
-                    self.symbol_info[symbol] = sym_info
-                    return sym_info
+            if self.config.mode == 'test' or self.config.mode == 'live':
+                # For futures trading
+                exchange_info = self.client.futures_exchange_info()
+                
+                # Find the symbol information
+                for sym_info in exchange_info['symbols']:
+                    if sym_info['symbol'] == symbol:
+                        self.symbol_info[symbol] = sym_info
+                        logger.info(f"Found symbol info for {symbol}")
+                        return sym_info
+            else:
+                # For spot trading (used in backtest)
+                exchange_info = self.client.get_exchange_info()
+                
+                # Find the symbol information
+                for sym_info in exchange_info['symbols']:
+                    if sym_info['symbol'] == symbol:
+                        self.symbol_info[symbol] = sym_info
+                        logger.info(f"Found symbol info for {symbol}")
+                        return sym_info
             
             logger.error(f"Symbol {symbol} not found in exchange info")
             return None
@@ -142,29 +155,55 @@ class Trader:
             logger.warning(f"No symbol info found for {symbol}, using original quantity")
             return quantity
         
-        # Find the LOT_SIZE filter which defines the precision
-        lot_size_filter = next((f for f in symbol_info['filters'] if f['filterType'] == 'LOT_SIZE'), None)
+        # Check if we're using futures
+        if self.config.mode == 'test' or self.config.mode == 'live':
+            # For futures trading
+            # Find the LOT_SIZE filter which defines the precision
+            lot_size_filter = next((f for f in symbol_info['filters'] if f['filterType'] == 'LOT_SIZE'), None)
+            
+            if lot_size_filter:
+                step_size = float(lot_size_filter['stepSize'])
+                
+                # Calculate precision
+                precision = 0
+                if step_size < 1:
+                    precision = len(str(step_size).split('.')[-1].rstrip('0'))
+                
+                # Calculate the correct quantity
+                quantity = float(quantity)
+                adjusted_quantity = math.floor(quantity / step_size) * step_size
+                adjusted_quantity = round(adjusted_quantity, precision)
+                
+                logger.info(f"Futures: Adjusted quantity from {quantity} to {adjusted_quantity} for {symbol} (precision: {precision}, step size: {step_size})")
+                return "{:.{}f}".format(adjusted_quantity, precision)  # Return as string with correct precision
+        else:
+            # For spot trading (used in backtest)
+            lot_size_filter = next((f for f in symbol_info['filters'] if f['filterType'] == 'LOT_SIZE'), None)
+            
+            if lot_size_filter:
+                min_qty = float(lot_size_filter['minQty'])
+                step_size = float(lot_size_filter['stepSize'])
+                
+                # Calculate precision based on step size
+                precision = 0
+                if step_size < 1:
+                    precision = len(str(step_size).split('.')[-1].rstrip('0'))
+                
+                # Calculate the correct quantity
+                quantity = float(quantity)
+                adjusted_quantity = math.floor(quantity / step_size) * step_size
+                if adjusted_quantity < min_qty:
+                    adjusted_quantity = min_qty
+                
+                # Format to the correct precision
+                adjusted_quantity = round(adjusted_quantity, precision)
+                
+                logger.info(f"Spot: Adjusted quantity from {quantity} to {adjusted_quantity} for {symbol} (precision: {precision})")
+                return adjusted_quantity
         
-        if not lot_size_filter:
-            logger.warning(f"No LOT_SIZE filter found for {symbol}, using original quantity")
-            return quantity
-        
-        # Get the step size
-        step_size = float(lot_size_filter['stepSize'])
-        
-        # Calculate precision
-        precision = 0
-        if step_size < 1:
-            precision = len(str(step_size).split('.')[-1].rstrip('0'))
-        
-        # Round to the correct precision
-        adjusted_quantity = math.floor(quantity / step_size) * step_size
-        
-        # Format to the correct number of decimal places
-        adjusted_quantity = round(adjusted_quantity, precision)
-        
-        logger.info(f"Adjusted quantity from {quantity} to {adjusted_quantity} for {symbol} (precision: {precision})")
-        return adjusted_quantity
+        # If we reach here, no appropriate filter was found
+        logger.warning(f"No appropriate filter found for {symbol}, using original quantity")
+        return quantity
     
     def open_position(self, side, quantity, entry_price, sl_price, tp_price):
         """
@@ -232,6 +271,13 @@ class Trader:
             
             logger.info(f"Opened {side} position of {adjusted_quantity} {self.config.symbol}")
             
+            # Get the executed price from the order fills
+            executed_price = float(order['avgPrice']) if 'avgPrice' in order else entry_price
+            
+            # Round SL/TP prices to the correct precision
+            sl_price = self._adjust_price_precision(self.config.symbol, sl_price)
+            tp_price = self._adjust_price_precision(self.config.symbol, tp_price)
+            
             # Place stop loss
             sl_order = self.client.futures_create_order(
                 symbol=self.config.symbol,
@@ -255,10 +301,10 @@ class Trader:
                 'id': order['orderId'],
                 'symbol': self.config.symbol,
                 'side': side,
-                'entry_price': entry_price,
-                'quantity': adjusted_quantity,
-                'sl_price': sl_price,
-                'tp_price': tp_price,
+                'entry_price': executed_price,
+                'quantity': float(adjusted_quantity),
+                'sl_price': float(sl_price),
+                'tp_price': float(tp_price),
                 'entry_time': datetime.now().timestamp(),
                 'sl_order_id': sl_order['orderId'],
                 'tp_order_id': tp_order['orderId']
@@ -270,6 +316,47 @@ class Trader:
         except BinanceAPIException as e:
             logger.error(f"Error opening position: {e}")
             return None
+    
+    def _adjust_price_precision(self, symbol, price):
+        """
+        Adjust the price to the correct precision for the symbol.
+        
+        Args:
+            symbol: Trading symbol
+            price: Original price
+            
+        Returns:
+            Adjusted price with correct precision
+        """
+        # Get symbol info
+        symbol_info = self._get_symbol_info(symbol)
+        
+        if not symbol_info:
+            logger.warning(f"No symbol info found for {symbol}, using original price")
+            return price
+        
+        # Find the PRICE_FILTER which defines the price precision
+        price_filter = next((f for f in symbol_info['filters'] if f['filterType'] == 'PRICE_FILTER'), None)
+        
+        if not price_filter:
+            logger.warning(f"No PRICE_FILTER found for {symbol}, using original price")
+            return price
+        
+        # Get the tick size
+        tick_size = float(price_filter['tickSize'])
+        
+        # Calculate precision
+        precision = 0
+        if tick_size < 1:
+            precision = len(str(tick_size).split('.')[-1].rstrip('0'))
+        
+        # Round to the correct precision
+        price = float(price)
+        adjusted_price = round(price / tick_size) * tick_size
+        adjusted_price = round(adjusted_price, precision)
+        
+        logger.info(f"Adjusted price from {price} to {adjusted_price} for {symbol} (precision: {precision})")
+        return "{:.{}f}".format(adjusted_price, precision)  # Return as string with correct precision
     
     def close_position(self, position_id, exit_price, reason):
         """
@@ -346,6 +433,18 @@ class Trader:
                     reduceOnly=True,
                     quantity=adjusted_quantity
                 )
+                
+                # If we have actual execution price, use it
+                if 'avgPrice' in order:
+                    exit_price = float(order['avgPrice'])
+                    
+                    # Recalculate PnL with actual exit price
+                    if side == 'BUY':
+                        pnl = (exit_price - entry_price) * quantity
+                        pnl_pct = (exit_price / entry_price - 1) * 100
+                    else:  # SELL
+                        pnl = (entry_price - exit_price) * quantity
+                        pnl_pct = (entry_price / exit_price - 1) * 100
                 
                 logger.info(f"Closed {side} position of {adjusted_quantity} {self.config.symbol} at {exit_price}, PnL: {pnl:.2f} ({pnl_pct:.2f}%)")
                 
@@ -571,7 +670,7 @@ class Trader:
         max_position_size = (balance * self.config.leverage) / entry_price
         position_size = min(position_size, max_position_size)
         
-        # Adjust for precision
+        # Adjust for precision - this will return a string or float depending on mode
         position_size = self._adjust_quantity_precision(self.config.symbol, position_size)
         
         logger.info(f"Calculated position size: {position_size} based on balance: {balance}, risk: {max_risk_amount}, entry: {entry_price}, SL: {sl_price}")
