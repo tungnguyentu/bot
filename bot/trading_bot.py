@@ -1,5 +1,6 @@
 import logging
 import time
+import random
 from .config import BotConfig
 from .data_collector import BinanceDataCollector
 from .indicators import TechnicalIndicators
@@ -85,6 +86,13 @@ class TradingBot:
         self.notifier.send_message(f"🚀 Trading bot started in {self.config.mode} mode for {self.config.symbol} with investment of ${self.config.invest}")
         
         try:
+            # If quick mode is enabled and we're in test mode, execute a trade immediately
+            if self.config.quick and self.config.mode == 'test':
+                self._execute_quick_test_trade()
+                if not self.config.train:  # If not in training mode, exit after quick trade
+                    logger.info("Quick test trade executed. Exiting...")
+                    return
+            
             while self.is_running:
                 # Get latest market data
                 market_data = self.data_collector.get_latest_data()
@@ -177,6 +185,82 @@ class TradingBot:
             self.notifier.send_message(f"🚨 Error: {str(e)}")
         finally:
             self.is_running = False
+    
+    def _execute_quick_test_trade(self):
+        """Execute a quick test trade immediately for testing purposes."""
+        logger.info("Quick test mode enabled. Executing immediate test trade...")
+        
+        # Get latest market data
+        market_data = self.data_collector.get_latest_data()
+        
+        # Calculate indicators
+        data_with_indicators = self.indicators.calculate_all(market_data)
+        
+        # Get current position (if any)
+        self.current_position = self.trader.get_current_position()
+        
+        # Only proceed if we don't have a position already
+        if self.current_position is None:
+            # Calculate risk parameters
+            risk_params = self.risk_manager.calculate_risk_params(data_with_indicators)
+            
+            # Get the current price
+            entry_price = market_data['close'].iloc[-1]
+            
+            # Randomly choose a side for the test trade
+            side = random.choice(["BUY", "SELL"])
+            
+            # Calculate SL and TP levels
+            sl_price = risk_params['sl_price']
+            tp_price = risk_params['tp_price']
+            
+            if sl_price is None or tp_price is None:
+                # Fallback if risk_manager couldn't calculate SL/TP
+                atr = data_with_indicators['atr'].iloc[-1]
+                if side == "BUY":
+                    sl_price = entry_price - (atr * self.config.sl_atr_multiplier)
+                    tp_price = entry_price + (atr * self.config.tp_atr_multiplier)
+                else:  # SELL
+                    sl_price = entry_price + (atr * self.config.sl_atr_multiplier)
+                    tp_price = entry_price - (atr * self.config.tp_atr_multiplier)
+            
+            # Calculate appropriate position size based on investment amount
+            position_size = self.trader.calculate_position_size(entry_price, sl_price)
+            
+            if position_size > 0:
+                logger.info(f"Opening quick test {side} position for {self.config.symbol} at {entry_price}")
+                
+                # Execute trade
+                trade_result = self.trader.open_position(
+                    side=side,
+                    quantity=position_size,
+                    entry_price=entry_price,
+                    sl_price=sl_price,
+                    tp_price=tp_price
+                )
+                
+                if trade_result:
+                    self.notifier.send_trade_entry(
+                        symbol=self.config.symbol,
+                        side=side,
+                        entry_price=entry_price,
+                        sl_price=sl_price,
+                        tp_price=tp_price,
+                        confidence=0.9,  # High confidence for test trade
+                        reason="Quick test trade (forced execution)"
+                    )
+                    
+                    logger.info(f"Quick test trade executed successfully: {side} position at {entry_price}")
+                    self.notifier.send_message(f"✅ Quick test trade executed successfully. Check positions in Binance testnet.")
+                else:
+                    logger.error("Failed to execute quick test trade")
+                    self.notifier.send_message("❌ Failed to execute quick test trade. Check logs for details.")
+            else:
+                logger.error("Could not calculate valid position size for quick test trade")
+                self.notifier.send_message("❌ Failed to execute quick test trade: Invalid position size")
+        else:
+            logger.info(f"Quick test mode: Position already exists for {self.config.symbol}, skipping test trade")
+            self.notifier.send_message(f"ℹ️ Quick test mode: Position already exists for {self.config.symbol}")
     
     def _generate_trade_reason(self, data):
         """Generate reasoning for trade entry based on indicators."""

@@ -15,6 +15,7 @@ This trading bot uses machine learning and technical indicators to generate trad
 - **Multiple Modes**: Backtest, test (Binance Testnet), and live trading
 - **Telegram Notifications**: Trade signals, executions, and performance reports
 - **Investment Management**: Control your trading capital with the invest parameter
+- **Quick Testing**: Immediately open test positions with the quick flag
 
 ## Setup
 
@@ -49,6 +50,12 @@ python main.py --symbol SOLUSDT --mode backtest --invest 500
 python main.py --symbol SOLUSDT --mode test --leverage 20 --invest 100
 ```
 
+### Quick Test (Immediate Position Opening)
+
+```bash
+python main.py --symbol SOLUSDT --mode test --leverage 20 --invest 100 --quick
+```
+
 ### Live Trading
 
 ```bash
@@ -66,6 +73,7 @@ python main.py --symbol SOLUSDT --mode live --leverage 20 --invest 100
 - `--tp_atr_multiplier`: Take Profit ATR multiplier (default: 2.0)
 - `--train`: Train the model before trading
 - `--invest`: Amount to invest in trading (default: 100.0)
+- `--quick`: Force immediate position opening for quick testing in test mode
 
 ## Trading Strategy
 
