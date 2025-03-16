@@ -259,6 +259,38 @@ class Trader:
             order_side = 'BUY' if side == 'BUY' else 'SELL'
             opposite_side = 'SELL' if side == 'BUY' else 'BUY'
             
+            # Ensure sufficient distance between entry and SL/TP for ADAUSDT or other low-priced assets
+            if self.config.symbol == 'ADAUSDT' or entry_price < 5:  # Handle low-priced assets
+                logger.info(f"Adjusting SL/TP distances for low-priced asset: {self.config.symbol}")
+                # Get symbol price info
+                symbol_info = self._get_symbol_info(self.config.symbol)
+                tick_size = 0.0001  # Default for ADAUSDT
+                
+                if symbol_info:
+                    price_filter = next((f for f in symbol_info['filters'] if f['filterType'] == 'PRICE_FILTER'), None)
+                    if price_filter:
+                        tick_size = float(price_filter['tickSize'])
+                
+                # Ensure minimum distance is respected (typically 1% for low-priced assets)
+                min_distance = max(entry_price * 0.01, tick_size * 10)
+                
+                if side == 'BUY':
+                    # For BUY: ensure SL is low enough and TP is high enough
+                    if entry_price - sl_price < min_distance:
+                        sl_price = entry_price - min_distance
+                        logger.info(f"Adjusted SL price to ensure minimum distance: {sl_price}")
+                    if tp_price - entry_price < min_distance:
+                        tp_price = entry_price + min_distance
+                        logger.info(f"Adjusted TP price to ensure minimum distance: {tp_price}")
+                else:  # SELL
+                    # For SELL: ensure SL is high enough and TP is low enough
+                    if sl_price - entry_price < min_distance:
+                        sl_price = entry_price + min_distance
+                        logger.info(f"Adjusted SL price to ensure minimum distance: {sl_price}")
+                    if entry_price - tp_price < min_distance:
+                        tp_price = entry_price - min_distance
+                        logger.info(f"Adjusted TP price to ensure minimum distance: {tp_price}")
+            
             # For test mode, use a fixed small quantity
             if self.config.mode == 'test':
                 # This quantity is already precision-adjusted in calculate_position_size
@@ -284,24 +316,65 @@ class Trader:
             sl_price = self._adjust_price_precision(self.config.symbol, sl_price)
             tp_price = self._adjust_price_precision(self.config.symbol, tp_price)
             
-            # Place stop loss and take profit
-            sl_order = self.client.futures_create_order(
-                symbol=self.config.symbol,
-                side=opposite_side,
-                type='STOP_MARKET',
-                stopPrice=sl_price,
-                reduceOnly=True,
-                quantity=adjusted_quantity
-            )
+            # Re-check distances after execution and precision adjustment
+            try:
+                # Get the latest market data to ensure SL/TP are valid
+                latest_market_data = self.client.futures_mark_price(symbol=self.config.symbol)
+                current_market_price = float(latest_market_data['markPrice'])
+                logger.info(f"Current market price: {current_market_price}, Entry price: {executed_price}")
+                
+                # For low-priced assets, ensure SL/TP are far enough from current price
+                if self.config.symbol == 'ADAUSDT' or current_market_price < 5:
+                    min_distance = current_market_price * 0.01
+                    
+                    if side == 'BUY':
+                        if current_market_price - float(sl_price) < min_distance:
+                            sl_price = self._adjust_price_precision(self.config.symbol, current_market_price - min_distance)
+                            logger.info(f"Re-adjusted SL price to avoid immediate trigger: {sl_price}")
+                        if float(tp_price) - current_market_price < min_distance:
+                            tp_price = self._adjust_price_precision(self.config.symbol, current_market_price + min_distance)
+                            logger.info(f"Re-adjusted TP price to avoid immediate trigger: {tp_price}")
+                    else:  # SELL
+                        if float(sl_price) - current_market_price < min_distance:
+                            sl_price = self._adjust_price_precision(self.config.symbol, current_market_price + min_distance)
+                            logger.info(f"Re-adjusted SL price to avoid immediate trigger: {sl_price}")
+                        if current_market_price - float(tp_price) < min_distance:
+                            tp_price = self._adjust_price_precision(self.config.symbol, current_market_price - min_distance)
+                            logger.info(f"Re-adjusted TP price to avoid immediate trigger: {tp_price}")
+            except Exception as e:
+                logger.warning(f"Could not re-check price distances: {e}")
             
-            tp_order = self.client.futures_create_order(
-                symbol=self.config.symbol,
-                side=opposite_side,
-                type='TAKE_PROFIT_MARKET',
-                stopPrice=tp_price,
-                reduceOnly=True,
-                quantity=adjusted_quantity
-            )
+            # Place stop loss using STOP_MARKET with reduceOnly=True
+            try:
+                sl_order = self.client.futures_create_order(
+                    symbol=self.config.symbol,
+                    side=opposite_side,
+                    type='STOP_MARKET',
+                    stopPrice=sl_price,
+                    reduceOnly=True,
+                    quantity=adjusted_quantity
+                )
+                logger.info(f"Set SL at {sl_price}")
+                sl_order_id = sl_order['orderId']
+            except BinanceAPIException as e:
+                logger.error(f"Failed to set SL order: {e}")
+                sl_order_id = None
+            
+            # Place take profit using TAKE_PROFIT_MARKET with reduceOnly=True
+            try:
+                tp_order = self.client.futures_create_order(
+                    symbol=self.config.symbol,
+                    side=opposite_side,
+                    type='TAKE_PROFIT_MARKET',
+                    stopPrice=tp_price,
+                    reduceOnly=True,
+                    quantity=adjusted_quantity
+                )
+                logger.info(f"Set TP at {tp_price}")
+                tp_order_id = tp_order['orderId']
+            except BinanceAPIException as e:
+                logger.error(f"Failed to set TP order: {e}")
+                tp_order_id = None
             
             # Track position
             position = {
@@ -313,11 +386,10 @@ class Trader:
                 'sl_price': float(sl_price) if isinstance(sl_price, str) else sl_price,
                 'tp_price': float(tp_price) if isinstance(tp_price, str) else tp_price,
                 'entry_time': datetime.now().timestamp(),
-                'sl_order_id': sl_order['orderId'],
-                'tp_order_id': tp_order['orderId']
+                'sl_order_id': sl_order_id,
+                'tp_order_id': tp_order_id
             }
             
-            logger.info(f"Set SL at {sl_price} and TP at {tp_price}")
             return position
             
         except BinanceAPIException as e:
@@ -662,17 +734,6 @@ class Trader:
         Returns:
             Appropriate position size (as string for futures, float for backtest)
         """
-        # In test mode, just use a small fixed position size that will definitely work
-        if self.config.mode == 'test':
-            # For testnet, use a very small fixed position size to ensure success
-            # This avoids all the margin requirement complexity
-            fixed_qty = 1.0  # Just use 1 unit for SOLUSDT
-            
-            # Adjust for precision
-            fixed_qty = self._adjust_quantity_precision(self.config.symbol, fixed_qty)
-            logger.info(f"Testnet mode: Using fixed quantity of {fixed_qty} for quick testing")
-            return fixed_qty
-        
         # For backtest or live modes, proceed with normal calculation
         # Get current margin balance
         margin = self.get_account_balance()
