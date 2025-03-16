@@ -128,7 +128,10 @@ class TradingBot:
                         # Calculate appropriate position size based on investment amount
                         position_size = self.trader.calculate_position_size(entry_price, sl_price)
                         
-                        if position_size > 0:
+                        # Check position size - need to convert to float if it's a string
+                        valid_position_size = self._validate_position_size(position_size)
+                        
+                        if valid_position_size:
                             # Execute trade
                             trade_result = self.trader.open_position(
                                 side=side,
@@ -227,7 +230,10 @@ class TradingBot:
             # Calculate appropriate position size based on investment amount
             position_size = self.trader.calculate_position_size(entry_price, sl_price)
             
-            if position_size > 0:
+            # Check position size - need to convert to float if it's a string
+            valid_position_size = self._validate_position_size(position_size)
+            
+            if valid_position_size:
                 logger.info(f"Opening quick test {side} position for {self.config.symbol} at {entry_price}")
                 
                 # Execute trade
@@ -322,3 +328,24 @@ class TradingBot:
         
         # 3. No exit signal
         return None
+    
+    def _validate_position_size(self, position_size):
+        """
+        Validate the position size value.
+        
+        Args:
+            position_size: Position size value (could be string or float)
+            
+        Returns:
+            True if position size is valid, False otherwise
+        """
+        try:
+            # If position_size is a string (from precision adjustment), convert to float
+            if isinstance(position_size, str):
+                position_size = float(position_size)
+            
+            # Check if position size is greater than 0
+            return position_size > 0
+        except (ValueError, TypeError) as e:
+            logger.error(f"Invalid position size: {position_size}, error: {e}")
+            return False

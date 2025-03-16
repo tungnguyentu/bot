@@ -645,7 +645,7 @@ class Trader:
             sl_price: Stop-loss price
             
         Returns:
-            Appropriate position size
+            Appropriate position size (as string for futures, float for backtest)
         """
         # Get current balance
         balance = self.get_account_balance()
@@ -669,6 +669,11 @@ class Trader:
         # Limit position size to ensure it doesn't exceed investment amount
         max_position_size = (balance * self.config.leverage) / entry_price
         position_size = min(position_size, max_position_size)
+        
+        # If position size is too small, return zero
+        if position_size < 0.000001:
+            logger.warning(f"Position size {position_size} is too small, setting to 0")
+            return "0" if self.config.mode in ['test', 'live'] else 0.0
         
         # Adjust for precision - this will return a string or float depending on mode
         position_size = self._adjust_quantity_precision(self.config.symbol, position_size)
