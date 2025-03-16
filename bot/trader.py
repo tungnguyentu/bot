@@ -49,6 +49,10 @@ class Trader:
         if self.config.mode == "backtest":
             return self.positions.get(self.config.symbol)
 
+        # Check if we have a simulated position in test mode
+        if self.config.mode == "test" and hasattr(self, 'simulated_position'):
+            return self.simulated_position
+
         # In test or live mode, get position from Binance
         try:
             position_info = self.client.futures_position_information(
@@ -262,6 +266,39 @@ class Trader:
 
         # In test or live mode, execute on Binance
         try:
+            # For test mode, handle testnet specially
+            if self.config.mode == "test":
+                # Create a simulated position for testing instead of actually placing orders
+                # This bypasses all margin requirements since we're not actually placing orders
+                logger.info(f"TEST MODE: Creating simulated position for {self.config.symbol} without actually placing orders")
+                
+                # Get current market price
+                ticker = self.client.futures_symbol_ticker(symbol=self.config.symbol)
+                current_price = float(ticker['price'])
+                
+                # Generate a fake order ID
+                fake_order_id = f"sim_{int(datetime.now().timestamp())}"
+                
+                # Create a simulated position record
+                position = {
+                    "id": fake_order_id,
+                    "symbol": self.config.symbol,
+                    "side": side,
+                    "entry_price": current_price,  # Use current market price
+                    "quantity": 1.0,  # Fixed quantity for testing
+                    "sl_price": sl_price,
+                    "tp_price": tp_price,
+                    "entry_time": datetime.now().timestamp(),
+                    "sl_order_id": f"{fake_order_id}_sl",
+                    "tp_order_id": f"{fake_order_id}_tp",
+                    "simulated": True  # Mark as simulated
+                }
+                
+                logger.info(f"Simulated {side} position created for {self.config.symbol} at {current_price}")
+                logger.info(f"Note: This is a simulated position for testing - no actual orders placed")
+                
+                return position
+
             # Set leverage - SIGNIFICANTLY reduce leverage for test mode
             if self.config.mode == "test":
                 # Use absolute minimum leverage in test mode for troublesome symbols
@@ -494,6 +531,45 @@ class Trader:
         if position is None:
             logger.warning(f"No position found with id {position_id}")
             return None
+
+        # For simulated test positions, handle specially
+        if self.config.mode == "test" and position.get("simulated", False):
+            logger.info(f"TEST MODE: Closing simulated position for {self.config.symbol}")
+            
+            # Calculate simulated PnL using current market price
+            ticker = self.client.futures_symbol_ticker(symbol=self.config.symbol)
+            current_price = float(ticker['price'])
+            
+            entry_price = position["entry_price"]
+            quantity = position["quantity"]
+            side = position["side"]
+            
+            if side == "BUY":
+                pnl = (current_price - entry_price) * quantity
+                pnl_pct = (current_price / entry_price - 1) * 100
+            else:  # SELL
+                pnl = (entry_price - current_price) * quantity
+                pnl_pct = (entry_price / current_price - 1) * 100
+            
+            logger.info(f"Simulated close of {side} position at {current_price}, PnL: {pnl:.2f} ({pnl_pct:.2f}%)")
+            
+            # Record trade in history
+            trade_record = {
+                "symbol": self.config.symbol,
+                "side": side,
+                "entry_price": entry_price,
+                "exit_price": current_price,
+                "quantity": quantity,
+                "entry_time": position.get("entry_time", 0),
+                "exit_time": datetime.now().timestamp(),
+                "pnl": pnl,
+                "pnl_pct": pnl_pct,
+                "reason": reason,
+                "simulated": True
+            }
+            
+            self.trade_history.append(trade_record)
+            return trade_record
 
         # Calculate PnL
         entry_price = position["entry_price"]
