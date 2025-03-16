@@ -262,11 +262,15 @@ class Trader:
 
         # In test or live mode, execute on Binance
         try:
-            # Set leverage - reduce leverage for test mode
+            # Set leverage - SIGNIFICANTLY reduce leverage for test mode
             if self.config.mode == "test":
-                # Use very low leverage in test mode to reduce margin requirements
-                effective_leverage = min(self.config.leverage, 2)  # Cap at 2x for testing
-                logger.info(f"Using reduced leverage {effective_leverage}x for test mode (instead of {self.config.leverage}x)")
+                # Use absolute minimum leverage in test mode for troublesome symbols
+                if self.config.symbol == "SOLUSDT":
+                    effective_leverage = 1  # Use 1x for SOLUSDT (no leverage)
+                    logger.info(f"Using minimum leverage 1x for {self.config.symbol} test mode")
+                else:
+                    effective_leverage = min(self.config.leverage, 2)  # Cap at 2x for other symbols
+                    logger.info(f"Using reduced leverage {effective_leverage}x for test mode (instead of {self.config.leverage}x)")
             else:
                 effective_leverage = self.config.leverage
                 
@@ -289,11 +293,20 @@ class Trader:
             order_side = "BUY" if side == "BUY" else "SELL"
             opposite_side = "SELL" if side == "BUY" else "BUY"
 
-            # Force valid quantity for SOLUSDT in test mode
+            # Special handling for SOLUSDT in test mode - use absolute minimum quantity
             if self.config.mode == "test" and self.config.symbol == "SOLUSDT":
-                # Special handling for SOLUSDT which requires whole units
-                adjusted_quantity = "1"  # Force 1.0 quantity for SOLUSDT
-                logger.info(f"Test mode for SOLUSDT: Forcing minimum valid quantity {adjusted_quantity}")
+                # Find the minimum quantity for this symbol
+                symbol_info = self._get_symbol_info(self.config.symbol)
+                min_qty = 1.0  # Default fallback
+                if symbol_info:
+                    for filter in symbol_info["filters"]:
+                        if filter["filterType"] == "LOT_SIZE":
+                            min_qty = float(filter["minQty"])
+                            break
+                
+                # Override with minimum quantity
+                adjusted_quantity = str(min_qty)
+                logger.info(f"Test mode for {self.config.symbol}: Using absolute minimum quantity {adjusted_quantity}")
             else:
                 # Normal adjustment for other symbols or live trading
                 adjusted_quantity = self._adjust_quantity_precision(self.config.symbol, quantity)
@@ -313,13 +326,43 @@ class Trader:
                 f"Attempting to open {side} position with quantity {adjusted_quantity} for {self.config.symbol}, leverage: {effective_leverage}x"
             )
 
-            # Open position with market order
-            order = self.client.futures_create_order(
-                symbol=self.config.symbol,
-                side=order_side,
-                type="MARKET",
-                quantity=adjusted_quantity,
-            )
+            # Try a new approach: use LIMIT orders instead of MARKET for test mode
+            if self.config.mode == "test":
+                # Get current price
+                ticker = self.client.futures_symbol_ticker(symbol=self.config.symbol)
+                current_price = float(ticker['price'])
+                
+                # Set limit price slightly favorable to ensure execution
+                # For BUY, set limit price slightly higher
+                # For SELL, set limit price slightly lower
+                limit_price = None
+                if side == "BUY":
+                    limit_price = current_price * 1.005  # 0.5% above market
+                else:
+                    limit_price = current_price * 0.995  # 0.5% below market
+                
+                # Adjust limit price precision
+                limit_price = self._adjust_price_precision(self.config.symbol, limit_price)
+                
+                logger.info(f"Using LIMIT order with price {limit_price} instead of MARKET for test mode")
+                
+                # Place LIMIT order
+                order = self.client.futures_create_order(
+                    symbol=self.config.symbol,
+                    side=order_side,
+                    type="LIMIT",
+                    price=limit_price,
+                    quantity=adjusted_quantity,
+                    timeInForce="GTC"  # Good Till Cancelled
+                )
+            else:
+                # For live mode or backtest, use MARKET order as before
+                order = self.client.futures_create_order(
+                    symbol=self.config.symbol,
+                    side=order_side,
+                    type="MARKET",
+                    quantity=adjusted_quantity,
+                )
 
             logger.info(
                 f"Opened {side} position of {adjusted_quantity} {self.config.symbol}"
@@ -745,22 +788,28 @@ class Trader:
         """
         # In test mode, use specific small position sizes
         if self.config.mode == "test":
-            # Special handling for SOLUSDT which requires whole units
+            # For SOLUSDT in testnet, use a very small quantity to ensure it works
             if self.config.symbol == "SOLUSDT":
-                # For SOLUSDT, use 1.0 as minimum since step size is 1.0
-                fixed_qty = 1.0  # Minimum quantity for SOLUSDT is 1.0 whole unit
-                logger.info(f"Testnet mode for SOLUSDT: Using minimum valid quantity of {fixed_qty}")
-                return self._adjust_quantity_precision(self.config.symbol, fixed_qty)
+                # For the problematic SOLUSDT, try with absolute minimum quantity
+                symbol_info = self._get_symbol_info(self.config.symbol)
+                if symbol_info:
+                    for filter in symbol_info["filters"]:
+                        if filter["filterType"] == "LOT_SIZE":
+                            min_qty = float(filter["minQty"])
+                            logger.info(f"Testnet mode for {self.config.symbol}: Using absolute minimum quantity of {min_qty}")
+                            return self._adjust_quantity_precision(self.config.symbol, min_qty)
+                
+                # Hardcoded fallback if we can't determine the minimum
+                return "1"  # This should be the minimum for SOLUSDT
             
-            # For other symbols, use the minimum allowed quantity
+            # For other symbols, also use minimum allowed quantity
             symbol_info = self._get_symbol_info(self.config.symbol)
             if symbol_info:
                 for filter in symbol_info["filters"]:
                     if filter["filterType"] == "LOT_SIZE":
                         min_qty = float(filter["minQty"])
-                        fixed_qty = min_qty
-                        logger.info(f"Testnet mode: Using minimum quantity of {fixed_qty} for testing")
-                        return self._adjust_quantity_precision(self.config.symbol, fixed_qty)
+                        logger.info(f"Testnet mode: Using minimum quantity of {min_qty} for testing")
+                        return self._adjust_quantity_precision(self.config.symbol, min_qty)
             
             # Default to a small value if we can't determine minimum
             tiny_qty = 0.01
