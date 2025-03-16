@@ -289,14 +289,24 @@ class Trader:
             order_side = "BUY" if side == "BUY" else "SELL"
             opposite_side = "SELL" if side == "BUY" else "BUY"
 
-            # Force ultra small quantity for SOLUSDT test mode
+            # Force valid quantity for SOLUSDT in test mode
             if self.config.mode == "test" and self.config.symbol == "SOLUSDT":
-                # Special handling for SOLUSDT which needs very small quantities in testnet
-                adjusted_quantity = "0.1"  # Force 0.1 quantity for SOLUSDT
-                logger.info(f"Test mode for SOLUSDT: Forcing tiny quantity {adjusted_quantity}")
+                # Special handling for SOLUSDT which requires whole units
+                adjusted_quantity = "1"  # Force 1.0 quantity for SOLUSDT
+                logger.info(f"Test mode for SOLUSDT: Forcing minimum valid quantity {adjusted_quantity}")
             else:
                 # Normal adjustment for other symbols or live trading
                 adjusted_quantity = self._adjust_quantity_precision(self.config.symbol, quantity)
+
+            # Validate - ensure we have a valid non-zero quantity
+            if adjusted_quantity == "0" or adjusted_quantity == "0.0" or float(adjusted_quantity) <= 0:
+                logger.error(f"Invalid quantity after adjustment: {adjusted_quantity} for {self.config.symbol}")
+                # Force minimum valid quantity as a fallback
+                if self.config.symbol == "SOLUSDT":
+                    adjusted_quantity = "1"  # Force 1.0 for SOLUSDT
+                    logger.info(f"Forcing minimum valid quantity: {adjusted_quantity} for {self.config.symbol}")
+                else:
+                    return None  # Can't proceed with zero quantity
 
             # Log before executing the order
             logger.info(
@@ -735,11 +745,12 @@ class Trader:
         """
         # In test mode, use specific small position sizes
         if self.config.mode == "test":
-            # Special handling for SOLUSDT which needs very small quantities in testnet
+            # Special handling for SOLUSDT which requires whole units
             if self.config.symbol == "SOLUSDT":
-                tiny_qty = 0.1  # Use 0.1 for SOLUSDT specifically
-                logger.info(f"Testnet mode for SOLUSDT: Using tiny quantity of {tiny_qty}")
-                return self._adjust_quantity_precision(self.config.symbol, tiny_qty)
+                # For SOLUSDT, use 1.0 as minimum since step size is 1.0
+                fixed_qty = 1.0  # Minimum quantity for SOLUSDT is 1.0 whole unit
+                logger.info(f"Testnet mode for SOLUSDT: Using minimum valid quantity of {fixed_qty}")
+                return self._adjust_quantity_precision(self.config.symbol, fixed_qty)
             
             # For other symbols, use the minimum allowed quantity
             symbol_info = self._get_symbol_info(self.config.symbol)
@@ -751,7 +762,7 @@ class Trader:
                         logger.info(f"Testnet mode: Using minimum quantity of {fixed_qty} for testing")
                         return self._adjust_quantity_precision(self.config.symbol, fixed_qty)
             
-            # Default to a very small value if we can't determine minimum
+            # Default to a small value if we can't determine minimum
             tiny_qty = 0.01
             logger.info(f"Testnet mode: Using tiny quantity of {tiny_qty} for testing")
             return self._adjust_quantity_precision(self.config.symbol, tiny_qty)
