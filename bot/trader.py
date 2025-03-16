@@ -259,23 +259,36 @@ class Trader:
             order_side = 'BUY' if side == 'BUY' else 'SELL'
             opposite_side = 'SELL' if side == 'BUY' else 'BUY'
             
-            # Ensure quantity is valid
-            float_quantity = float(quantity) if isinstance(quantity, str) else quantity
+            # Special handling for test mode
+            if self.config.mode == 'test':
+                # Use the absolute minimum quantity for this symbol
+                symbol_info = self._get_symbol_info(self.config.symbol)
+                if symbol_info:
+                    for filter in symbol_info['filters']:
+                        if filter['filterType'] == 'LOT_SIZE':
+                            min_qty = float(filter['minQty'])
+                            adjusted_quantity = self._adjust_quantity_precision(self.config.symbol, min_qty)
+                            logger.info(f"Test mode: Using minimum quantity {adjusted_quantity}")
+                            break
+                else:
+                    # Fallback if we can't get symbol info
+                    adjusted_quantity = "0.01"
+            else:
+                # Normal adjustment for live trading
+                adjusted_quantity = self._adjust_quantity_precision(self.config.symbol, quantity)
             
-            # Safety check for test mode - ensure we're using a very small position
-            if self.config.mode == 'test' and float_quantity > 1.0:
-                logger.warning(f"Test mode: Position size {float_quantity} seems too large, reducing to 0.1")
-                quantity = self._adjust_quantity_precision(self.config.symbol, 0.1)
+            # Log before executing the order
+            logger.info(f"Attempting to open {side} position with quantity {adjusted_quantity} for {self.config.symbol}")
             
             # Open position with market order
             order = self.client.futures_create_order(
                 symbol=self.config.symbol,
                 side=order_side,
                 type='MARKET',
-                quantity=quantity
+                quantity=adjusted_quantity
             )
             
-            logger.info(f"Opened {side} position of {quantity} {self.config.symbol}")
+            logger.info(f"Opened {side} position of {adjusted_quantity} {self.config.symbol}")
             
             # Get the executed price from the order fills
             executed_price = float(order['avgPrice']) if 'avgPrice' in order else entry_price
@@ -291,7 +304,7 @@ class Trader:
                 type='STOP_MARKET',
                 stopPrice=sl_price,
                 reduceOnly=True,
-                quantity=quantity
+                quantity=adjusted_quantity
             )
             
             tp_order = self.client.futures_create_order(
@@ -300,7 +313,7 @@ class Trader:
                 type='TAKE_PROFIT_MARKET',
                 stopPrice=tp_price,
                 reduceOnly=True,
-                quantity=quantity
+                quantity=adjusted_quantity
             )
             
             # Track position
@@ -309,7 +322,7 @@ class Trader:
                 'symbol': self.config.symbol,
                 'side': side,
                 'entry_price': executed_price,
-                'quantity': float(quantity) if isinstance(quantity, str) else quantity,
+                'quantity': float(adjusted_quantity) if isinstance(adjusted_quantity, str) else adjusted_quantity,
                 'sl_price': float(sl_price) if isinstance(sl_price, str) else sl_price,
                 'tp_price': float(tp_price) if isinstance(tp_price, str) else tp_price,
                 'entry_time': datetime.now().timestamp(),
@@ -322,6 +335,9 @@ class Trader:
             
         except BinanceAPIException as e:
             logger.error(f"Error opening position: {e}")
+            # For debugging
+            if hasattr(e, 'response') and e.response:
+                logger.error(f"Response: {e.response.text}")
             return None
     
     def _adjust_price_precision(self, symbol, price):
@@ -662,51 +678,23 @@ class Trader:
         Returns:
             Appropriate position size (as string for futures, float for backtest)
         """
-        # In test mode, use a very small fixed position size that will definitely work
+        # In test mode, just use a tiny fixed position size
         if self.config.mode == 'test':
-            # For testnet, use a minimal position size to ensure success
-            # This avoids all the margin requirement complexity
-            
-            # Different symbols need different minimum quantities
-            symbol = self.config.symbol
-            
-            # Use a mapping for common symbols
-            min_quantities = {
-                'BTCUSDT': 0.001,
-                'ETHUSDT': 0.01,
-                'SOLUSDT': 0.1,  # Significantly reduced from 1.0
-                'DOGEUSDT': 100,
-                'ADAUSDT': 10,
-            }
-            
-            # Use the predefined amount or a small default
-            fixed_qty = min_quantities.get(symbol, 0.1)
-            
-            # If we can get symbol info, check minimum quantity
-            symbol_info = self._get_symbol_info(symbol)
+            # For testnet, use the smallest possible position size to ensure it works
+            # This completely bypasses all margin calculations
+            symbol_info = self._get_symbol_info(self.config.symbol)
             if symbol_info:
                 for filter in symbol_info['filters']:
                     if filter['filterType'] == 'LOT_SIZE':
                         min_qty = float(filter['minQty'])
-                        # Use the minimum quantity if our fixed amount is too small
-                        if fixed_qty < min_qty:
-                            fixed_qty = min_qty
-                        break
+                        fixed_qty = min_qty
+                        logger.info(f"Testnet mode: Using minimum quantity of {fixed_qty} for testing")
+                        return self._adjust_quantity_precision(self.config.symbol, fixed_qty)
             
-            # Double-check that it's not too large by calculating approximately how much margin it would need
-            estimated_margin_needed = (fixed_qty * entry_price) / self.config.leverage
-            available_balance = 5.0  # Assume we have at least 5 USDT available in testnet
-            
-            # If the position seems too large, reduce it further
-            if estimated_margin_needed > (available_balance * 0.8):
-                factor = (available_balance * 0.8) / estimated_margin_needed
-                fixed_qty = fixed_qty * factor
-                logger.info(f"Reduced testnet position size to fit within available margin. New size: {fixed_qty}")
-            
-            # Adjust for precision
-            fixed_qty = self._adjust_quantity_precision(symbol, fixed_qty)
-            logger.info(f"Testnet mode: Using fixed quantity of {fixed_qty} for {symbol} (est. margin needed: {estimated_margin_needed:.2f} USDT)")
-            return fixed_qty
+            # Default to a very small value if we can't determine minimum
+            tiny_qty = 0.01
+            logger.info(f"Testnet mode: Using tiny quantity of {tiny_qty} for testing")
+            return self._adjust_quantity_precision(self.config.symbol, tiny_qty)
         
         # For backtest or live modes, proceed with normal calculation
         # Get current margin balance
