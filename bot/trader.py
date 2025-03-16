@@ -256,7 +256,8 @@ class Trader:
                     raise e
             
             # Calculate order parameters
-            order_side = Client.SIDE_BUY if side == 'BUY' else Client.SIDE_SELL
+            order_side = 'BUY' if side == 'BUY' else 'SELL'
+            opposite_side = 'SELL' if side == 'BUY' else 'BUY'
             
             # Adjust quantity to match symbol precision
             adjusted_quantity = self._adjust_quantity_precision(self.config.symbol, quantity)
@@ -265,7 +266,7 @@ class Trader:
             order = self.client.futures_create_order(
                 symbol=self.config.symbol,
                 side=order_side,
-                type=Client.ORDER_TYPE_MARKET,
+                type='MARKET',
                 quantity=adjusted_quantity
             )
             
@@ -278,20 +279,20 @@ class Trader:
             sl_price = self._adjust_price_precision(self.config.symbol, sl_price)
             tp_price = self._adjust_price_precision(self.config.symbol, tp_price)
             
-            # Place stop loss
+            # Place stop loss - using STOP instead of STOP_MARKET
             sl_order = self.client.futures_create_order(
                 symbol=self.config.symbol,
-                side=Client.SIDE_SELL if side == 'BUY' else Client.SIDE_BUY,
-                type=Client.ORDER_TYPE_STOP_MARKET,
+                side=opposite_side,
+                type='STOP',  # Use 'STOP' instead of 'STOP_MARKET'
                 stopPrice=sl_price,
                 closePosition=True
             )
             
-            # Place take profit
+            # Place take profit - using TAKE_PROFIT instead of TAKE_PROFIT_MARKET
             tp_order = self.client.futures_create_order(
                 symbol=self.config.symbol,
-                side=Client.SIDE_SELL if side == 'BUY' else Client.SIDE_BUY,
-                type=Client.ORDER_TYPE_TAKE_PROFIT_MARKET,
+                side=opposite_side,
+                type='TAKE_PROFIT',  # Use 'TAKE_PROFIT' instead of 'TAKE_PROFIT_MARKET'
                 stopPrice=tp_price,
                 closePosition=True
             )
@@ -401,7 +402,7 @@ class Trader:
             # In test or live mode, execute on Binance
             try:
                 # Close position with market order
-                order_side = Client.SIDE_SELL if side == 'BUY' else Client.SIDE_BUY
+                order_side = 'SELL' if side == 'BUY' else 'BUY'
                 
                 # Cancel existing SL/TP orders
                 if 'sl_order_id' in position:
@@ -429,7 +430,7 @@ class Trader:
                 order = self.client.futures_create_order(
                     symbol=self.config.symbol,
                     side=order_side,
-                    type=Client.ORDER_TYPE_MARKET,
+                    type='MARKET',  # Use 'MARKET' instead of Client.ORDER_TYPE_MARKET
                     reduceOnly=True,
                     quantity=adjusted_quantity
                 )
