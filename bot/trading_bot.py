@@ -249,14 +249,14 @@ class TradingBot:
                     self.notifier.send_trade_entry(
                         symbol=self.config.symbol,
                         side=side,
-                        entry_price=entry_price,
-                        sl_price=sl_price,
-                        tp_price=tp_price,
+                        entry_price=trade_result['entry_price'],  # Use actual entry price
+                        sl_price=trade_result['sl_price'],
+                        tp_price=trade_result['tp_price'],
                         confidence=0.9,  # High confidence for test trade
                         reason="Quick test trade (forced execution)"
                     )
                     
-                    logger.info(f"Quick test trade executed successfully: {side} position at {entry_price}")
+                    logger.info(f"Quick test trade executed successfully: {side} position at {trade_result['entry_price']}")
                     self.notifier.send_message(f"✅ Quick test trade executed successfully. Check positions in Binance testnet.")
                 else:
                     logger.error("Failed to execute quick test trade")

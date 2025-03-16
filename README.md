@@ -72,7 +72,7 @@ python main.py --symbol SOLUSDT --mode live --leverage 20 --invest 100
 - `--sl_atr_multiplier`: Stop Loss ATR multiplier (default: 1.5)
 - `--tp_atr_multiplier`: Take Profit ATR multiplier (default: 2.0)
 - `--train`: Train the model before trading
-- `--invest`: Amount to invest in trading (default: 100.0)
+- `--invest`: Amount to use as margin for trading (default: 100.0 USDT)
 - `--quick`: Force immediate position opening for quick testing in test mode
 
 ## Trading Strategy
@@ -87,9 +87,10 @@ The bot follows a Mean Reversion Strategy with AI validation:
 ## Risk Management
 
 The bot uses the following risk management principles:
-- Maximum 2% risk per trade based on your investment amount
-- Position sizing automatically calculated using stop loss and investment value
-- Leveraged positions are supported but controlled by your investment parameter
+- Maximum 2% risk per trade based on your margin amount
+- Position sizing automatically calculated using stop loss and margin value
+- Leveraged positions are supported (e.g., with --leverage 20, your $100 margin provides $2000 buying power)
+- The bot will never risk more than your specified margin amount
 
 ## Telegram Notifications
 
