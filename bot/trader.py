@@ -259,26 +259,8 @@ class Trader:
             order_side = 'BUY' if side == 'BUY' else 'SELL'
             opposite_side = 'SELL' if side == 'BUY' else 'BUY'
             
-            # For test mode, use a very small fixed quantity to ensure success
-            if self.config.mode == 'test':
-                # Get the minimum quantity from symbol info
-                symbol_info = self._get_symbol_info(self.config.symbol)
-                if symbol_info:
-                    lot_size_filter = next((f for f in symbol_info['filters'] if f['filterType'] == 'LOT_SIZE'), None)
-                    if lot_size_filter:
-                        min_qty = float(lot_size_filter['minQty'])
-                        # Double the minimum quantity to be safe
-                        test_quantity = min_qty * 2
-                        adjusted_quantity = self._adjust_quantity_precision(self.config.symbol, test_quantity)
-                        logger.info(f"Testnet mode: Using minimum quantity {adjusted_quantity} for {self.config.symbol}")
-                    else:
-                        # If we can't find min quantity, use a very conservative default
-                        adjusted_quantity = "0.1"
-                else:
-                    adjusted_quantity = "0.1"
-            else:
-                # Normal operation for backtest/live
-                adjusted_quantity = self._adjust_quantity_precision(self.config.symbol, quantity)
+            # Adjust quantity to match symbol precision
+            adjusted_quantity = self._adjust_quantity_precision(self.config.symbol, quantity)
             
             # Convert to float for comparison
             float_quantity = float(adjusted_quantity) if isinstance(adjusted_quantity, str) else adjusted_quantity
@@ -298,15 +280,30 @@ class Trader:
                 logger.error(f"Position value ${notional_value} is below minimum notional ${min_notional}")
                 return None
             
-            # Open position with market order
-            order = self.client.futures_create_order(
-                symbol=self.config.symbol,
-                side=order_side,
-                type='MARKET',
-                quantity=adjusted_quantity
-            )
-            
-            logger.info(f"Opened {side} position of {adjusted_quantity} {self.config.symbol}")
+            # Try to open position with reduced size if first attempt fails
+            max_retries = 3
+            for retry in range(max_retries):
+                try:
+                    # Open position with market order
+                    order = self.client.futures_create_order(
+                        symbol=self.config.symbol,
+                        side=order_side,
+                        type='MARKET',
+                        quantity=adjusted_quantity
+                    )
+                    
+                    logger.info(f"Opened {side} position of {adjusted_quantity} {self.config.symbol}")
+                    break  # Exit retry loop if successful
+                except BinanceAPIException as e:
+                    # If margin is insufficient and we have retries left, reduce size and try again
+                    if e.code == -2019 and retry < max_retries - 1:  # -2019 is "Margin is insufficient"
+                        # Reduce position size by 25% each retry
+                        float_quantity *= 0.75
+                        adjusted_quantity = self._adjust_quantity_precision(self.config.symbol, float_quantity)
+                        logger.warning(f"Insufficient margin, reducing position size to {adjusted_quantity} (retry {retry+1}/{max_retries})")
+                    else:
+                        # Other error or out of retries
+                        raise e
             
             # Get the executed price from the order fills
             executed_price = float(order['avgPrice']) if 'avgPrice' in order else entry_price
@@ -665,22 +662,16 @@ class Trader:
             account_info = self.client.futures_account()
             available_balance = float(account_info['availableBalance'])
             
-            # For testnet, we'll just use a very small amount to ensure it works
-            if self.config.mode == 'test':
-                # Use either 5 USDT or 10% of the available balance, whichever is smaller
-                test_margin = min(5.0, available_balance * 0.1)
-                logger.info(f"Testnet mode: Using reduced margin of {test_margin} USDT (available: {available_balance} USDT)")
-                return test_margin
-            
-            # For live trading, use the configured investment amount or what's available, whichever is smaller
+            # Use the smaller of our configured investment amount or what's actually available
             usable_margin = min(self.initial_balance, available_balance)
+            
             logger.info(f"Available margin: {available_balance} USDT, Using: {usable_margin} USDT")
             return usable_margin
             
         except BinanceAPIException as e:
             logger.error(f"Error getting account balance: {e}")
             # If we can't get the balance, be conservative and assume minimum amount
-            return 5.0 if self.config.mode == 'test' else min(self.initial_balance, 10)
+            return min(self.initial_balance, 10)  # Default to 10 USDT as a fallback
     
     def calculate_position_size(self, entry_price, sl_price):
         """
@@ -696,50 +687,34 @@ class Trader:
         # Get current margin balance
         margin = self.get_account_balance()
         
+        # If this is a test in testnet, reduce the position size to avoid margin errors
+        if self.config.mode == 'test':
+            # Use only 50% of available margin in testnet to be safe
+            margin = margin * 0.5
+        
         # Maximum amount to risk per trade (2% of margin)
         max_risk_amount = margin * 0.02
         
         # Calculate risk per unit
         risk_per_unit = abs(entry_price - sl_price)
         
-        # Calculate position size in base currency (unleveraged)
+        # Calculate position size in base currency
         if risk_per_unit > 0:
             position_size = max_risk_amount / risk_per_unit
         else:
             position_size = 0
             logger.warning("Risk per unit is zero or negative, setting position size to 0")
         
-        # Adjust for leverage - this increases our buying power
-        # For testnet, use a much smaller position to ensure it works
-        if self.config.mode == 'test':
-            # In testnet, use a fixed small position size that will definitely work
-            base_position = 0.1  # Minimum position size for most assets
-            
-            # For higher-priced assets, adjust based on price
-            if entry_price > 1000:
-                base_position = 0.01
-            elif entry_price > 100:
-                base_position = 0.1
-            else:
-                base_position = 1.0
-                
-            logger.info(f"Testnet mode: Using fixed small position size: {base_position}")
-            
-            # Adjust for precision
-            position_size = self._adjust_quantity_precision(self.config.symbol, base_position)
-            
-            logger.info(f"Testnet position size: {position_size} for {self.config.symbol}")
-            return position_size
-        
-        # For backtest or live trading, calculate normally
-        leveraged_position_size = position_size * self.config.leverage
+        # Adjust for leverage
+        unleveraged_position_size = position_size
+        leveraged_position_size = unleveraged_position_size * self.config.leverage
         
         # Calculate maximum position size based on margin and leverage
-        # Using 80% of the max to provide a safety margin
-        max_position_value = (margin * self.config.leverage) * 0.8
+        # Using 90% of the max to provide a safety margin
+        max_position_value = (margin * self.config.leverage) * 0.9
         max_position_size = max_position_value / entry_price
         
-        # Use the smaller of our calculated values
+        # Use the smaller of our calculated values to ensure we don't exceed our margin
         position_size = min(leveraged_position_size, max_position_size)
         
         # Enforce minimum position size for the symbol
@@ -757,8 +732,12 @@ class Trader:
                         else:
                             logger.warning(f"Cannot afford minimum position size {min_qty}. Setting to 0")
                             return "0" if self.config.mode in ['test', 'live'] else 0.0
+            
+            # If we can't determine minimum size, use a small default
+            if position_size < 0.001:
+                position_size = 0.001
         
-        # Adjust for precision
+        # Adjust for precision - this will return a string or float depending on mode
         position_size = self._adjust_quantity_precision(self.config.symbol, position_size)
         
         logger.info(f"Calculated position size: {position_size} based on margin: {margin}, risk: {max_risk_amount}, entry: {entry_price}, SL: {sl_price}, leverage: {self.config.leverage}x")
