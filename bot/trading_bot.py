@@ -82,7 +82,7 @@ class TradingBot:
     def _run_trading_loop(self):
         """Run the main trading loop for test or live trading."""
         logger.info(f"Starting trading loop in {self.config.mode} mode...")
-        self.notifier.send_message(f"🚀 Trading bot started in {self.config.mode} mode for {self.config.symbol}")
+        self.notifier.send_message(f"🚀 Trading bot started in {self.config.mode} mode for {self.config.symbol} with investment of ${self.config.invest}")
         
         try:
             while self.is_running:
@@ -117,26 +117,30 @@ class TradingBot:
                         sl_price = risk_params['sl_price']
                         tp_price = risk_params['tp_price']
                         
-                        # Execute trade
-                        trade_result = self.trader.open_position(
-                            side=side,
-                            quantity=self.config.quantity,
-                            entry_price=entry_price,
-                            sl_price=sl_price,
-                            tp_price=tp_price
-                        )
+                        # Calculate appropriate position size based on investment amount
+                        position_size = self.trader.calculate_position_size(entry_price, sl_price)
                         
-                        if trade_result:
-                            trade_reason = self._generate_trade_reason(data_with_indicators)
-                            self.notifier.send_trade_entry(
-                                symbol=self.config.symbol,
+                        if position_size > 0:
+                            # Execute trade
+                            trade_result = self.trader.open_position(
                                 side=side,
+                                quantity=position_size,
                                 entry_price=entry_price,
                                 sl_price=sl_price,
-                                tp_price=tp_price,
-                                confidence=confidence,
-                                reason=trade_reason
+                                tp_price=tp_price
                             )
+                            
+                            if trade_result:
+                                trade_reason = self._generate_trade_reason(data_with_indicators)
+                                self.notifier.send_trade_entry(
+                                    symbol=self.config.symbol,
+                                    side=side,
+                                    entry_price=entry_price,
+                                    sl_price=sl_price,
+                                    tp_price=tp_price,
+                                    confidence=confidence,
+                                    reason=trade_reason
+                                )
                 else:
                     # Have position, check for exit conditions
                     exit_signal = self._check_exit_signal(

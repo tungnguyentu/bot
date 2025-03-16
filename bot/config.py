@@ -11,6 +11,7 @@ class BotConfig:
     sl_atr_multiplier: float
     tp_atr_multiplier: float
     train: bool
+    invest: float = 100.0  # Default investment amount
     
     def __str__(self) -> str:
         """String representation of the config."""
@@ -18,5 +19,5 @@ class BotConfig:
             f"BotConfig(symbol={self.symbol}, leverage={self.leverage}, "
             f"mode={self.mode}, interval={self.interval}, quantity={self.quantity}, "
             f"sl_atr_multiplier={self.sl_atr_multiplier}, tp_atr_multiplier={self.tp_atr_multiplier}, "
-            f"train={self.train})"
+            f"train={self.train}, invest={self.invest})"
         )

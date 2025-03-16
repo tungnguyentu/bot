@@ -6,6 +6,7 @@ from binance.client import Client
 from binance.exceptions import BinanceAPIException
 import os
 import uuid
+import math
 from .config import BotConfig
 from .notifier import TelegramNotifier
 
@@ -21,6 +22,11 @@ class Trader:
         self.client = self._initialize_client()
         self.positions = {}  # track active positions
         self.trade_history = []  # track historical trades
+        # Cache for symbol information
+        self.symbol_info = {}
+        # Initial account balance to use for trading
+        self.initial_balance = config.invest
+        self.current_balance = config.invest
     
     def _initialize_client(self):
         """Initialize Binance client based on the trading mode."""
@@ -89,6 +95,77 @@ class Trader:
             logger.error(f"Error getting SL/TP from orders: {e}")
             return None, None
     
+    def _get_symbol_info(self, symbol):
+        """
+        Get symbol information and cache it.
+        
+        Args:
+            symbol: Trading symbol
+            
+        Returns:
+            Dictionary with symbol information
+        """
+        if symbol in self.symbol_info:
+            return self.symbol_info[symbol]
+        
+        try:
+            # Get exchange information
+            exchange_info = self.client.get_exchange_info()
+            
+            # Find the symbol information
+            for sym_info in exchange_info['symbols']:
+                if sym_info['symbol'] == symbol:
+                    self.symbol_info[symbol] = sym_info
+                    return sym_info
+            
+            logger.error(f"Symbol {symbol} not found in exchange info")
+            return None
+        except BinanceAPIException as e:
+            logger.error(f"Error getting symbol info: {e}")
+            return None
+    
+    def _adjust_quantity_precision(self, symbol, quantity):
+        """
+        Adjust the quantity to the correct precision for the symbol.
+        
+        Args:
+            symbol: Trading symbol
+            quantity: Original quantity
+            
+        Returns:
+            Adjusted quantity with correct precision
+        """
+        # Get symbol info
+        symbol_info = self._get_symbol_info(symbol)
+        
+        if not symbol_info:
+            logger.warning(f"No symbol info found for {symbol}, using original quantity")
+            return quantity
+        
+        # Find the LOT_SIZE filter which defines the precision
+        lot_size_filter = next((f for f in symbol_info['filters'] if f['filterType'] == 'LOT_SIZE'), None)
+        
+        if not lot_size_filter:
+            logger.warning(f"No LOT_SIZE filter found for {symbol}, using original quantity")
+            return quantity
+        
+        # Get the step size
+        step_size = float(lot_size_filter['stepSize'])
+        
+        # Calculate precision
+        precision = 0
+        if step_size < 1:
+            precision = len(str(step_size).split('.')[-1].rstrip('0'))
+        
+        # Round to the correct precision
+        adjusted_quantity = math.floor(quantity / step_size) * step_size
+        
+        # Format to the correct number of decimal places
+        adjusted_quantity = round(adjusted_quantity, precision)
+        
+        logger.info(f"Adjusted quantity from {quantity} to {adjusted_quantity} for {symbol} (precision: {precision})")
+        return adjusted_quantity
+    
     def open_position(self, side, quantity, entry_price, sl_price, tp_price):
         """
         Open a new position.
@@ -141,17 +218,19 @@ class Trader:
             
             # Calculate order parameters
             order_side = Client.SIDE_BUY if side == 'BUY' else Client.SIDE_SELL
-            position_side = 'LONG' if side == 'BUY' else 'SHORT'
+            
+            # Adjust quantity to match symbol precision
+            adjusted_quantity = self._adjust_quantity_precision(self.config.symbol, quantity)
             
             # Open position with market order
             order = self.client.futures_create_order(
                 symbol=self.config.symbol,
                 side=order_side,
                 type=Client.ORDER_TYPE_MARKET,
-                quantity=quantity
+                quantity=adjusted_quantity
             )
             
-            logger.info(f"Opened {side} position of {quantity} {self.config.symbol}")
+            logger.info(f"Opened {side} position of {adjusted_quantity} {self.config.symbol}")
             
             # Place stop loss
             sl_order = self.client.futures_create_order(
@@ -177,7 +256,7 @@ class Trader:
                 'symbol': self.config.symbol,
                 'side': side,
                 'entry_price': entry_price,
-                'quantity': quantity,
+                'quantity': adjusted_quantity,
                 'sl_price': sl_price,
                 'tp_price': tp_price,
                 'entry_time': datetime.now().timestamp(),
@@ -256,16 +335,19 @@ class Trader:
                     except BinanceAPIException as e:
                         logger.warning(f"Error cancelling TP order: {e}")
                 
+                # Adjust quantity to match symbol precision
+                adjusted_quantity = self._adjust_quantity_precision(self.config.symbol, quantity)
+                
                 # Close the position
                 order = self.client.futures_create_order(
                     symbol=self.config.symbol,
                     side=order_side,
                     type=Client.ORDER_TYPE_MARKET,
                     reduceOnly=True,
-                    quantity=quantity
+                    quantity=adjusted_quantity
                 )
                 
-                logger.info(f"Closed {side} position of {quantity} {self.config.symbol} at {exit_price}, PnL: {pnl:.2f} ({pnl_pct:.2f}%)")
+                logger.info(f"Closed {side} position of {adjusted_quantity} {self.config.symbol} at {exit_price}, PnL: {pnl:.2f} ({pnl_pct:.2f}%)")
                 
             except BinanceAPIException as e:
                 logger.error(f"Error closing position: {e}")
@@ -308,8 +390,8 @@ class Trader:
         self.trade_history = []
         current_position = None
         
-        # Track account balance
-        starting_balance = 10000.0  # Assume starting with $10,000
+        # Track account balance - use the investment amount
+        starting_balance = self.initial_balance
         current_balance = starting_balance
         balance_history = []
         
@@ -435,3 +517,63 @@ class Trader:
         
         logger.info(f"Backtest completed with {total_trades} trades, win rate: {win_rate:.2%}, total return: {results['total_return']:.2f}%")
         return results
+    
+    def get_account_balance(self):
+        """Get the current account balance for trading."""
+        if self.config.mode == 'backtest':
+            return self.current_balance
+        
+        try:
+            # For futures trading
+            account_info = self.client.futures_account_balance()
+            for balance in account_info:
+                if balance['asset'] == 'USDT':
+                    # Use either the actual balance or the configured investment amount, whichever is lower
+                    actual_balance = float(balance['balance'])
+                    return min(actual_balance, self.initial_balance)
+            
+            return self.initial_balance  # Default to initial investment if no USDT balance found
+        except BinanceAPIException as e:
+            logger.error(f"Error getting account balance: {e}")
+            return self.initial_balance
+    
+    def calculate_position_size(self, entry_price, sl_price):
+        """
+        Calculate position size based on risk parameters and investment amount.
+        
+        Args:
+            entry_price: Entry price for the trade
+            sl_price: Stop-loss price
+            
+        Returns:
+            Appropriate position size
+        """
+        # Get current balance
+        balance = self.get_account_balance()
+        
+        # Maximum amount to risk per trade (2% of balance)
+        max_risk_amount = balance * 0.02
+        
+        # Calculate risk per unit
+        risk_per_unit = abs(entry_price - sl_price)
+        
+        # Calculate position size in base currency
+        if risk_per_unit > 0:
+            position_size = max_risk_amount / risk_per_unit
+        else:
+            position_size = 0
+            logger.warning("Risk per unit is zero or negative, setting position size to 0")
+        
+        # Adjust for leverage
+        position_size = position_size * self.config.leverage
+        
+        # Limit position size to ensure it doesn't exceed investment amount
+        max_position_size = (balance * self.config.leverage) / entry_price
+        position_size = min(position_size, max_position_size)
+        
+        # Adjust for precision
+        position_size = self._adjust_quantity_precision(self.config.symbol, position_size)
+        
+        logger.info(f"Calculated position size: {position_size} based on balance: {balance}, risk: {max_risk_amount}, entry: {entry_price}, SL: {sl_price}")
+        
+        return position_size

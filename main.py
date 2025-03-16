@@ -48,6 +48,8 @@ def parse_arguments():
                         help='Take Profit ATR multiplier (default: 2.0)')
     parser.add_argument('--train', action='store_true',
                         help='Train the model before trading')
+    parser.add_argument('--invest', type=float, default=100.0,
+                        help='Amount to invest in trading (default: 100.0)')
     
     return parser.parse_args()
 
@@ -68,7 +70,8 @@ def main():
         quantity=args.quantity,
         sl_atr_multiplier=args.sl_atr_multiplier,
         tp_atr_multiplier=args.tp_atr_multiplier,
-        train=args.train
+        train=args.train,
+        invest=args.invest
     )
     
     logger.info(f"Starting trading bot with config: {config}")
