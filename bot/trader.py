@@ -364,16 +364,24 @@ class Trader:
             # Get the executed price from the order fills
             executed_price = float(order['avgPrice']) if 'avgPrice' in order else entry_price
             
-            # Round SL/TP prices to the correct precision
-            sl_price = self._adjust_price_precision(self.config.symbol, sl_price)
-            tp_price = self._adjust_price_precision(self.config.symbol, tp_price)
-            
-            # Re-check distances after execution and precision adjustment
+            # Get the latest market price to ensure SL/TP are valid
             try:
-                # Get the latest market data to ensure SL/TP are valid
                 latest_market_data = self.client.futures_mark_price(symbol=self.config.symbol)
                 current_market_price = float(latest_market_data['markPrice'])
                 logger.info(f"Current market price: {current_market_price}, Entry price: {executed_price}")
+                
+                # Adjust SL/TP prices for PERCENT_PRICE filter
+                sl_price, tp_price = self._adjust_price_for_percent_limit(
+                    self.config.symbol, 
+                    current_market_price, 
+                    sl_price, 
+                    tp_price, 
+                    side
+                )
+                
+                # Round SL/TP prices to the correct precision
+                sl_price = self._adjust_price_precision(self.config.symbol, sl_price)
+                tp_price = self._adjust_price_precision(self.config.symbol, tp_price)
                 
                 # For low-priced assets, ensure SL/TP are far enough from current price
                 if self.config.symbol == 'ADAUSDT' or current_market_price < 5:
@@ -393,6 +401,18 @@ class Trader:
                         if current_market_price - float(tp_price) < min_distance:
                             tp_price = self._adjust_price_precision(self.config.symbol, current_market_price - min_distance)
                             logger.info(f"Re-adjusted TP price to avoid immediate trigger: {tp_price}")
+                    
+                    # Final check with PERCENT_PRICE filter
+                    sl_price, tp_price = self._adjust_price_for_percent_limit(
+                        self.config.symbol, 
+                        current_market_price, 
+                        float(sl_price), 
+                        float(tp_price), 
+                        side
+                    )
+                    # Apply precision adjustment again
+                    sl_price = self._adjust_price_precision(self.config.symbol, sl_price)
+                    tp_price = self._adjust_price_precision(self.config.symbol, tp_price)
             except Exception as e:
                 logger.warning(f"Could not re-check price distances: {e}")
             
@@ -410,7 +430,48 @@ class Trader:
                 sl_order_id = sl_order['orderId']
             except BinanceAPIException as e:
                 logger.error(f"Failed to set SL order: {e}")
-                sl_order_id = None
+                if e.code == -4131:  # PERCENT_PRICE filter issue
+                    logger.warning("Retrying with adjusted SL based on PERCENT_PRICE filter")
+                    try:
+                        # Get current market price
+                        latest_market_data = self.client.futures_mark_price(symbol=self.config.symbol)
+                        current_market_price = float(latest_market_data['markPrice'])
+                        
+                        # Calculate minimum valid price for SL
+                        symbol_info = self._get_symbol_info(self.config.symbol)
+                        if symbol_info:
+                            percent_filter = next((f for f in symbol_info['filters'] if f['filterType'] == 'PERCENT_PRICE'), None)
+                            if percent_filter:
+                                multiplier_down = float(percent_filter.get('multiplierDown', 0.9))
+                                min_price = current_market_price * multiplier_down
+                                
+                                if side == 'BUY':
+                                    sl_price = self._adjust_price_precision(self.config.symbol, min_price)
+                                else:  # SELL
+                                    multiplier_up = float(percent_filter.get('multiplierUp', 1.1))
+                                    max_price = current_market_price * multiplier_up
+                                    sl_price = self._adjust_price_precision(self.config.symbol, max_price)
+                                
+                                # Try again with adjusted price
+                                sl_order = self.client.futures_create_order(
+                                    symbol=self.config.symbol,
+                                    side=opposite_side,
+                                    type='STOP_MARKET',
+                                    stopPrice=sl_price,
+                                    reduceOnly=True,
+                                    quantity=adjusted_quantity
+                                )
+                                logger.info(f"Set SL at {sl_price} (after PERCENT_PRICE adjustment)")
+                                sl_order_id = sl_order['orderId']
+                            else:
+                                sl_order_id = None
+                        else:
+                            sl_order_id = None
+                    except Exception as e2:
+                        logger.error(f"Failed again to set SL order: {e2}")
+                        sl_order_id = None
+                else:
+                    sl_order_id = None
             
             # Place take profit using TAKE_PROFIT_MARKET with reduceOnly=True
             try:
@@ -426,7 +487,47 @@ class Trader:
                 tp_order_id = tp_order['orderId']
             except BinanceAPIException as e:
                 logger.error(f"Failed to set TP order: {e}")
-                tp_order_id = None
+                if e.code == -4131:  # PERCENT_PRICE filter issue
+                    logger.warning("Retrying with adjusted TP based on PERCENT_PRICE filter")
+                    try:
+                        # Get current market price
+                        latest_market_data = self.client.futures_mark_price(symbol=self.config.symbol)
+                        current_market_price = float(latest_market_data['markPrice'])
+                        
+                        # Calculate maximum valid price for TP
+                        symbol_info = self._get_symbol_info(self.config.symbol)
+                        if symbol_info:
+                            percent_filter = next((f for f in symbol_info['filters'] if f['filterType'] == 'PERCENT_PRICE'), None)
+                            if percent_filter:
+                                if side == 'BUY':
+                                    multiplier_up = float(percent_filter.get('multiplierUp', 1.1))
+                                    max_price = current_market_price * multiplier_up
+                                    tp_price = self._adjust_price_precision(self.config.symbol, max_price)
+                                else:  # SELL
+                                    multiplier_down = float(percent_filter.get('multiplierDown', 0.9))
+                                    min_price = current_market_price * multiplier_down
+                                    tp_price = self._adjust_price_precision(self.config.symbol, min_price)
+                                
+                                # Try again with adjusted price
+                                tp_order = self.client.futures_create_order(
+                                    symbol=self.config.symbol,
+                                    side=opposite_side,
+                                    type='TAKE_PROFIT_MARKET',
+                                    stopPrice=tp_price,
+                                    reduceOnly=True,
+                                    quantity=adjusted_quantity
+                                )
+                                logger.info(f"Set TP at {tp_price} (after PERCENT_PRICE adjustment)")
+                                tp_order_id = tp_order['orderId']
+                            else:
+                                tp_order_id = None
+                        else:
+                            tp_order_id = None
+                    except Exception as e2:
+                        logger.error(f"Failed again to set TP order: {e2}")
+                        tp_order_id = None
+                else:
+                    tp_order_id = None
             
             # Track position
             position = {
@@ -489,6 +590,62 @@ class Trader:
         logger.info(f"Adjusted price from {price} to {adjusted_price} for {symbol} (precision: {precision})")
         return "{:.{}f}".format(adjusted_price, precision)  # Return as string with correct precision
     
+    def _adjust_price_for_percent_limit(self, symbol, current_price, sl_price, tp_price, side):
+        """
+        Adjust SL and TP prices to meet the PERCENT_PRICE filter requirements.
+        
+        Args:
+            symbol: Trading symbol
+            current_price: Current market price
+            sl_price: Stop loss price
+            tp_price: Take profit price
+            side: Trade side ('BUY' or 'SELL')
+            
+        Returns:
+            Tuple of adjusted (sl_price, tp_price)
+        """
+        symbol_info = self._get_symbol_info(symbol)
+        if not symbol_info:
+            return sl_price, tp_price
+        
+        # Find the PERCENT_PRICE filter
+        percent_filter = next((f for f in symbol_info['filters'] if f['filterType'] == 'PERCENT_PRICE'), None)
+        if not percent_filter:
+            return sl_price, tp_price
+        
+        # Get the multiplier up and down limits
+        multiplier_up = float(percent_filter.get('multiplierUp', 1.1))  # Default to 10% up
+        multiplier_down = float(percent_filter.get('multiplierDown', 0.9))  # Default to 10% down
+        
+        # Calculate the valid price range
+        max_price = current_price * multiplier_up
+        min_price = current_price * multiplier_down
+        
+        logger.info(f"PERCENT_PRICE filter: {min_price:.6f} to {max_price:.6f} (current: {current_price:.6f})")
+        
+        # Adjust SL and TP prices to be within the valid range
+        adjusted_sl = sl_price
+        adjusted_tp = tp_price
+        
+        if side == 'BUY':
+            # For BUY orders, SL should be above min_price and TP below max_price
+            if sl_price < min_price:
+                adjusted_sl = min_price
+                logger.info(f"Adjusted SL price from {sl_price} to {adjusted_sl} (PERCENT_PRICE filter)")
+            if tp_price > max_price:
+                adjusted_tp = max_price
+                logger.info(f"Adjusted TP price from {tp_price} to {adjusted_tp} (PERCENT_PRICE filter)")
+        else:  # SELL
+            # For SELL orders, SL should be below max_price and TP above min_price
+            if sl_price > max_price:
+                adjusted_sl = max_price
+                logger.info(f"Adjusted SL price from {sl_price} to {adjusted_sl} (PERCENT_PRICE filter)")
+            if tp_price < min_price:
+                adjusted_tp = min_price
+                logger.info(f"Adjusted TP price from {tp_price} to {adjusted_tp} (PERCENT_PRICE filter)")
+        
+        return adjusted_sl, adjusted_tp
+
     @retry_on_connection_error()
     def close_position(self, position_id, exit_price, reason):
         """
