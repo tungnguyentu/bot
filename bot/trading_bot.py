@@ -1,6 +1,7 @@
 import logging
 import time
 import random
+import traceback
 from .config import BotConfig
 from .data_collector import BinanceDataCollector
 from .indicators import TechnicalIndicators
@@ -85,6 +86,9 @@ class TradingBot:
         logger.info(f"Starting trading loop in {self.config.mode} mode...")
         self.notifier.send_message(f"🚀 Trading bot started in {self.config.mode} mode for {self.config.symbol} with investment of ${self.config.invest}")
         
+        consecutive_errors = 0
+        max_consecutive_errors = 5
+        
         try:
             # If quick mode is enabled and we're in test mode, execute a trade immediately
             if self.config.quick and self.config.mode == 'test':
@@ -94,98 +98,127 @@ class TradingBot:
                     return
             
             while self.is_running:
-                # Get latest market data
-                market_data = self.data_collector.get_latest_data()
-                
-                # Calculate indicators
-                data_with_indicators = self.indicators.calculate_all(market_data)
-                
-                # Get prediction and confidence
-                prediction, confidence = self.model.predict_with_confidence(data_with_indicators)
-                
-                # Get current position (if any)
-                self.current_position = self.trader.get_current_position()
-                
-                # Calculate risk parameters
-                risk_params = self.risk_manager.calculate_risk_params(
-                    data_with_indicators, 
-                    self.current_position
-                )
-                
-                # Execute trading logic
-                if self.current_position is None:
-                    # No position, check for entry
-                    if prediction != 0 and confidence > 0.7:  # Threshold for entry
-                        entry_price = market_data['close'].iloc[-1]
-                        
-                        # Determine position side
-                        side = "BUY" if prediction > 0 else "SELL"
-                        
-                        # Calculate SL and TP levels
-                        sl_price = risk_params['sl_price']
-                        tp_price = risk_params['tp_price']
-                        
-                        # Calculate appropriate position size based on investment amount
-                        position_size = self.trader.calculate_position_size(entry_price, sl_price)
-                        
-                        # Check position size - need to convert to float if it's a string
-                        valid_position_size = self._validate_position_size(position_size)
-                        
-                        if valid_position_size:
-                            # Execute trade
-                            trade_result = self.trader.open_position(
-                                side=side,
-                                quantity=position_size,
-                                entry_price=entry_price,
-                                sl_price=sl_price,
-                                tp_price=tp_price
-                            )
-                            
-                            if trade_result:
-                                trade_reason = self._generate_trade_reason(data_with_indicators)
-                                self.notifier.send_trade_entry(
-                                    symbol=self.config.symbol,
-                                    side=side,
-                                    entry_price=entry_price,
-                                    sl_price=sl_price,
-                                    tp_price=tp_price,
-                                    confidence=confidence,
-                                    reason=trade_reason
-                                )
-                else:
-                    # Have position, check for exit conditions
-                    exit_signal = self._check_exit_signal(
+                try:
+                    # Get latest market data
+                    market_data = self.data_collector.get_latest_data()
+                    
+                    if market_data.empty:
+                        logger.warning("Empty market data received, retrying after delay")
+                        time.sleep(30)  # Wait and retry
+                        consecutive_errors += 1
+                        if consecutive_errors >= max_consecutive_errors:
+                            logger.error(f"Too many consecutive errors ({consecutive_errors}), stopping bot")
+                            self.notifier.send_message("🚨 Bot stopped due to too many data retrieval errors")
+                            self.is_running = False
+                        continue
+                    
+                    # Reset consecutive errors counter on successful data retrieval
+                    consecutive_errors = 0
+                    
+                    # Calculate indicators
+                    data_with_indicators = self.indicators.calculate_all(market_data)
+                    
+                    # Get prediction and confidence
+                    prediction, confidence = self.model.predict_with_confidence(data_with_indicators)
+                    
+                    # Get current position (if any)
+                    self.current_position = self.trader.get_current_position()
+                    
+                    # Calculate risk parameters
+                    risk_params = self.risk_manager.calculate_risk_params(
                         data_with_indicators, 
-                        prediction, 
-                        confidence,
                         self.current_position
                     )
                     
-                    if exit_signal:
-                        exit_price = market_data['close'].iloc[-1]
-                        exit_result = self.trader.close_position(
-                            position_id=self.current_position['id'],
-                            exit_price=exit_price,
-                            reason=exit_signal
+                    # Execute trading logic
+                    if self.current_position is None:
+                        # No position, check for entry
+                        if prediction != 0 and confidence > 0.7:  # Threshold for entry
+                            entry_price = market_data['close'].iloc[-1]
+                            
+                            # Determine position side
+                            side = "BUY" if prediction > 0 else "SELL"
+                            
+                            # Calculate SL and TP levels
+                            sl_price = risk_params['sl_price']
+                            tp_price = risk_params['tp_price']
+                            
+                            # Calculate appropriate position size based on investment amount
+                            position_size = self.trader.calculate_position_size(entry_price, sl_price)
+                            
+                            # Check position size - need to convert to float if it's a string
+                            valid_position_size = self._validate_position_size(position_size)
+                            
+                            if valid_position_size:
+                                # Execute trade
+                                trade_result = self.trader.open_position(
+                                    side=side,
+                                    quantity=position_size,
+                                    entry_price=entry_price,
+                                    sl_price=sl_price,
+                                    tp_price=tp_price
+                                )
+                                
+                                if trade_result:
+                                    trade_reason = self._generate_trade_reason(data_with_indicators)
+                                    self.notifier.send_trade_entry(
+                                        symbol=self.config.symbol,
+                                        side=side,
+                                        entry_price=entry_price,
+                                        sl_price=sl_price,
+                                        tp_price=tp_price,
+                                        confidence=confidence,
+                                        reason=trade_reason
+                                    )
+                    else:
+                        # Have position, check for exit conditions
+                        exit_signal = self._check_exit_signal(
+                            data_with_indicators, 
+                            prediction, 
+                            confidence,
+                            self.current_position
                         )
                         
-                        if exit_result:
-                            self.notifier.send_trade_exit(
-                                symbol=self.config.symbol,
+                        if exit_signal:
+                            exit_price = market_data['close'].iloc[-1]
+                            exit_result = self.trader.close_position(
+                                position_id=self.current_position['id'],
                                 exit_price=exit_price,
-                                pnl=exit_result['pnl'],
                                 reason=exit_signal
                             )
+                            
+                            if exit_result:
+                                self.notifier.send_trade_exit(
+                                    symbol=self.config.symbol,
+                                    exit_price=exit_price,
+                                    pnl=exit_result['pnl'],
+                                    reason=exit_signal
+                                )
+                    
+                    # Sleep to avoid excessive API calls
+                    time.sleep(60)  # Check every minute
                 
-                # Sleep to avoid excessive API calls
-                time.sleep(60)  # Check every minute
+                except Exception as e:
+                    error_details = traceback.format_exc()
+                    logger.error(f"Error in trading iteration: {e}\n{error_details}")
+                    consecutive_errors += 1
+                    
+                    if consecutive_errors >= max_consecutive_errors:
+                        logger.error(f"Too many consecutive errors ({consecutive_errors}), stopping bot")
+                        self.notifier.send_message(f"🚨 Bot stopped due to too many consecutive errors: {str(e)}")
+                        self.is_running = False
+                    else:
+                        # Continue running but with increased delay to avoid API rate limits
+                        logger.info(f"Waiting {30 * consecutive_errors}s before retry ({consecutive_errors}/{max_consecutive_errors})")
+                        time.sleep(30 * consecutive_errors)  # Increasing delay with each consecutive error
                 
         except KeyboardInterrupt:
             logger.info("Trading bot stopped by user")
             self.notifier.send_message("⚠️ Trading bot stopped manually")
         except Exception as e:
-            logger.exception("Error in trading loop")
-            self.notifier.send_message(f"🚨 Error: {str(e)}")
+            error_details = traceback.format_exc()
+            logger.exception(f"Critical error in trading loop: {e}\n{error_details}")
+            self.notifier.send_message(f"🚨 Critical error: {str(e)}")
         finally:
             self.is_running = False
     

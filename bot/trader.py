@@ -7,10 +7,57 @@ from binance.exceptions import BinanceAPIException
 import os
 import uuid
 import math
+import time
+import requests
+from requests.exceptions import RequestException
+from urllib3.exceptions import HTTPError
+import http.client
+from functools import wraps
 from .config import BotConfig
 from .notifier import TelegramNotifier
 
 logger = logging.getLogger(__name__)
+
+def retry_on_connection_error(max_retries=3, initial_delay=1, backoff_factor=2):
+    """
+    Decorator to retry functions on connection errors with exponential backoff.
+    
+    Args:
+        max_retries: Maximum number of retry attempts
+        initial_delay: Initial delay between retries in seconds
+        backoff_factor: Multiplier for delay on each retry
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            delay = initial_delay
+            last_exception = None
+            
+            for retry in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except (BinanceAPIException, requests.exceptions.RequestException, 
+                        http.client.RemoteDisconnected, ConnectionError, HTTPError) as e:
+                    last_exception = e
+                    
+                    # Check if we should retry
+                    retry_codes = [-1000, -1001, -1002, -1007, -1013, -1015, -1018, -1021, -1022, -2019]
+                    
+                    if isinstance(e, BinanceAPIException) and e.code not in retry_codes:
+                        # Don't retry for specific API errors that won't benefit from retrying
+                        raise e
+                    
+                    if retry < max_retries:
+                        wait_time = delay * (backoff_factor ** retry)
+                        logger.warning(f"Connection error: {e}. Retrying in {wait_time:.2f}s ({retry+1}/{max_retries})")
+                        time.sleep(wait_time)
+                    else:
+                        logger.error(f"Failed after {max_retries} retries: {e}")
+                        raise last_exception
+            
+            return None  # This line should not be reached
+        return wrapper
+    return decorator
 
 class Trader:
     """Handles trading execution on Binance."""
@@ -28,6 +75,7 @@ class Trader:
         self.initial_balance = config.invest
         self.current_balance = config.invest
     
+    @retry_on_connection_error(max_retries=3, initial_delay=1)
     def _initialize_client(self):
         """Initialize Binance client based on the trading mode."""
         api_key = os.getenv('BINANCE_API_KEY')
@@ -42,6 +90,7 @@ class Trader:
         # Use regular API for live or backtest
         return Client(api_key, api_secret)
     
+    @retry_on_connection_error()
     def get_current_position(self):
         """Get the current position for the configured symbol."""
         # In backtest mode, use tracked positions
@@ -76,6 +125,7 @@ class Trader:
             logger.error(f"Error getting current position: {e}")
             return None
     
+    @retry_on_connection_error()
     def _get_sl_tp_from_orders(self):
         """Get SL and TP prices from open orders."""
         sl_price = None
@@ -95,6 +145,7 @@ class Trader:
             logger.error(f"Error getting SL/TP from orders: {e}")
             return None, None
     
+    @retry_on_connection_error()
     def _get_symbol_info(self, symbol):
         """
         Get symbol information and cache it.
@@ -205,6 +256,7 @@ class Trader:
         logger.warning(f"No appropriate filter found for {symbol}, using original quantity")
         return quantity
     
+    @retry_on_connection_error()
     def open_position(self, side, quantity, entry_price, sl_price, tp_price):
         """
         Open a new position.
@@ -437,6 +489,7 @@ class Trader:
         logger.info(f"Adjusted price from {price} to {adjusted_price} for {symbol} (precision: {precision})")
         return "{:.{}f}".format(adjusted_price, precision)  # Return as string with correct precision
     
+    @retry_on_connection_error()
     def close_position(self, position_id, exit_price, reason):
         """
         Close an existing position.
@@ -696,6 +749,7 @@ class Trader:
         logger.info(f"Backtest completed with {total_trades} trades, win rate: {win_rate:.2%}, total return: {results['total_return']:.2f}%")
         return results
     
+    @retry_on_connection_error()
     def get_account_balance(self):
         """Get the current account balance to use as margin."""
         if self.config.mode == 'backtest':

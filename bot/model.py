@@ -127,8 +127,8 @@ class XGBoostModel:
         # Prepare features
         X = self._prepare_features(df)
         
-        # Handle NaN values
-        X = X.fillna(method='ffill').fillna(method='bfill')
+        # Handle NaN values - updated to use non-deprecated methods
+        X = X.ffill().bfill()  # Replace deprecated fillna(method='ffill/bfill')
         
         # Scale features
         X_scaled = self.scaler.transform(X)
@@ -153,8 +153,8 @@ class XGBoostModel:
         # Prepare features
         X = self._prepare_features(df)
         
-        # Handle NaN values
-        X = X.fillna(method='ffill').fillna(method='bfill')
+        # Handle NaN values - updated to use non-deprecated methods
+        X = X.ffill().bfill()  # Replace deprecated fillna(method='ffill/bfill')
         
         # Scale features
         X_scaled = self.scaler.transform(X)
