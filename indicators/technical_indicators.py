@@ -3,6 +3,7 @@ import numpy as np
 import os
 import sys
 import logging
+import warnings
 # Replace talib with ta library
 import ta
 from ta.trend import MACD, EMAIndicator, SMAIndicator, ADXIndicator
@@ -99,23 +100,39 @@ class TechnicalIndicators:
         rsi = RSIIndicator(close=df['close'], window=14)
         df['rsi'] = rsi.rsi()
         
-        # Directional Movement Index - handle division by zero errors
-        try:
-            adx_indicator = ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14)
-            df['adx'] = adx_indicator.adx()
-            df['di_plus'] = adx_indicator.adx_pos()
-            df['di_minus'] = adx_indicator.adx_neg()
-            
-            # Replace NaN values with 0
-            df['adx'] = df['adx'].fillna(0)
-            df['di_plus'] = df['di_plus'].fillna(0)
-            df['di_minus'] = df['di_minus'].fillna(0)
-        except Exception as e:
-            logger.warning(f"Error calculating ADX indicator: {e}")
-            # Set default values if calculation fails
-            df['adx'] = 0
-            df['di_plus'] = 0
-            df['di_minus'] = 0
+        # Directional Movement Index with more robust error handling
+        # Suppress the specific RuntimeWarning from ta library
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=RuntimeWarning)
+            try:
+                # Replace zeros in high-low difference to avoid division by zero
+                df['high_minus_low'] = df['high'] - df['low']
+                # Replace zeros with a small number to avoid division by zero
+                df.loc[df['high_minus_low'] == 0, 'high_minus_low'] = 0.0001
+                
+                adx_indicator = ADXIndicator(
+                    high=df['high'], 
+                    low=df['low'], 
+                    close=df['close'], 
+                    window=14
+                )
+                
+                # Get the ADX indicators and handle NaN values
+                df['adx'] = adx_indicator.adx()
+                df['di_plus'] = adx_indicator.adx_pos()
+                df['di_minus'] = adx_indicator.adx_neg()
+                
+                # Replace NaN and inf values with 0
+                df['adx'] = df['adx'].replace([np.inf, -np.inf], np.nan).fillna(0)
+                df['di_plus'] = df['di_plus'].replace([np.inf, -np.inf], np.nan).fillna(0)
+                df['di_minus'] = df['di_minus'].replace([np.inf, -np.inf], np.nan).fillna(0)
+                
+            except Exception as e:
+                logger.warning(f"Error calculating ADX indicator: {e}")
+                # Set default values if calculation fails
+                df['adx'] = 0
+                df['di_plus'] = 0
+                df['di_minus'] = 0
         
         return df
     
