@@ -1,11 +1,13 @@
 import logging
+import os
 import sys
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import time
 
-sys.path.append('/Users/tungnt/Downloads/game')
+# Add the parent directory to sys.path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 
 logger = logging.getLogger(__name__)

@@ -1,4 +1,5 @@
 import logging
+import os
 import sys
 import asyncio
 from telegram import Bot
@@ -6,8 +7,10 @@ from telegram.error import TelegramError
 import threading
 import queue
 from datetime import datetime
+import time
 
-sys.path.append('/Users/tungnt/Downloads/game')
+# Add the parent directory to sys.path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 
 logger = logging.getLogger(__name__)
