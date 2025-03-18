@@ -93,9 +93,18 @@ def run_backtest(args):
         logger.info(f"Max Drawdown: {results['max_drawdown']:.2%}")
         logger.info("=" * 50)
         
-        # We should store trades and equity_curve in results for proper plotting
-        # For now, pass empty lists to avoid the error
-        backtester.plot_results([], [])
+        # Store trades and equity_curve in backtester object if available
+        trades = []
+        equity_curve = []
+        
+        # Use the actual trade and equity data if available in results
+        if 'trades' in results:
+            trades = results['trades']
+        if 'equity_curve' in results:
+            equity_curve = results['equity_curve']
+            
+        # Pass the actual data to plot_results
+        backtester.plot_results(trades, equity_curve)
     else:
         logger.error("Backtesting failed. Check the logs for more information.")
 

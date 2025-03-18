@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
+import traceback
 
 import config
 from binance_client import BinanceClient
@@ -45,6 +46,13 @@ class Backtester:
                 self.logger.error("No historical data available for backtesting")
                 return None
                 
+            # Validate the data has enough candles
+            if len(historical_data) < 100:
+                self.logger.error(f"Not enough historical data. Need at least 100 candles, got {len(historical_data)}")
+                return None
+                
+            self.logger.info(f"Retrieved {len(historical_data)} candles from {historical_data.index[0]} to {historical_data.index[-1]}")
+            
             # Prepare for simulation
             balance = self.initial_balance
             position = None
@@ -170,15 +178,33 @@ class Backtester:
             # Calculate performance metrics
             results = self.calculate_performance(trades, equity_curve)
             
+            # Add trades and equity curve to the results
+            results['trades'] = trades
+            results['equity_curve'] = equity_curve
+            
             # Log results
             self.logger.info(f"Backtest completed for {self.symbol}. Final balance: {balance:.2f}")
             for metric, value in results.items():
-                self.logger.info(f"{metric}: {value}")
-                
+                if metric not in ['trades', 'equity_curve']:  # Don't log the full trades list
+                    self.logger.info(f"{metric}: {value}")
+            
             return results
             
+        except KeyError as ke:
+            self.logger.error(f"Key error during backtesting: {str(ke)}. This may indicate missing columns in historical data.")
+            self.logger.error(traceback.format_exc())
+            return None
+        except IndexError as ie:
+            self.logger.error(f"Index error during backtesting: {str(ie)}. This may indicate issues with data slicing.")
+            self.logger.error(traceback.format_exc())
+            return None
+        except ValueError as ve:
+            self.logger.error(f"Value error during backtesting: {str(ve)}. Check data types and calculations.")
+            self.logger.error(traceback.format_exc())
+            return None
         except Exception as e:
             self.logger.error(f"Error during backtesting: {str(e)}")
+            self.logger.error(traceback.format_exc())
             return None
             
     def fetch_historical_data(self):
@@ -186,21 +212,28 @@ class Backtester:
         try:
             self.logger.info(f"Fetching historical data for {self.symbol}")
             
-            # Calculate date range
-            end_date_str = self.end_date.strftime('%d %b %Y %H:%M:%S')
-            
             # For simplicity, we're getting a fixed number of candles
-            # In a real implementation, you might want to fetch based on date range
             data = self.client.get_historical_klines(
                 self.symbol,
                 self.timeframe,
                 limit=1000  # Adjust based on your needs
             )
             
+            # Validate the returned data
+            if data.empty:
+                self.logger.error("Received empty dataframe from API")
+                return pd.DataFrame()
+                
+            if 'close' not in data.columns or 'high' not in data.columns or 'low' not in data.columns:
+                self.logger.error(f"Missing required columns in data. Available columns: {data.columns.tolist()}")
+                return pd.DataFrame()
+                
+            self.logger.info(f"Successfully retrieved historical data with {len(data)} candles")
             return data
             
         except Exception as e:
             self.logger.error(f"Error fetching historical data: {str(e)}")
+            self.logger.error(traceback.format_exc())
             return pd.DataFrame()
             
     def generate_signal_from_data(self, df):
@@ -294,6 +327,7 @@ class Backtester:
             
         except Exception as e:
             self.logger.error(f"Error generating signal from historical data: {str(e)}")
+            self.logger.error(traceback.format_exc())
             return None
             
     def calculate_pnl(self, position, current_price, exit_type):
@@ -338,9 +372,9 @@ class Backtester:
                     'profit_factor': 0,
                     'sharpe_ratio': 0,
                     'max_drawdown': 0,
-                    'total_return': 0.0,  # Added missing key
-                    'gross_profit': 0.0,  # Added missing key
-                    'gross_loss': 0.0     # Added missing key
+                    'total_return': 0.0,
+                    'gross_profit': 0.0,
+                    'gross_loss': 0.0
                 }
                 
             # Convert trades to DataFrame for analysis
@@ -393,49 +427,67 @@ class Backtester:
             
         except Exception as e:
             self.logger.error(f"Error calculating performance metrics: {str(e)}")
+            self.logger.error(traceback.format_exc())
             return {
                 'total_trades': 0,
                 'win_rate': 0,
                 'profit_factor': 0,
                 'sharpe_ratio': 0,
                 'max_drawdown': 0,
-                'total_return': 0.0,  # Added missing key
-                'gross_profit': 0.0,  # Added missing key
-                'gross_loss': 0.0,    # Added missing key
+                'total_return': 0.0,
+                'gross_profit': 0.0,
+                'gross_loss': 0.0,
                 'error': str(e)
             }
             
     def plot_results(self, trades, equity_curve):
         """Plot backtest results."""
         try:
+            # Check if we have valid data to plot
+            if not trades and not equity_curve:
+                self.logger.warning("No data available for plotting. Skipping plot generation.")
+                return
+                
             # Create figure and grid
             fig = plt.figure(figsize=(15, 10))
             
             # Equity curve
             plt.subplot(2, 1, 1)
-            plt.plot(equity_curve)
-            plt.title(f'Equity Curve - {self.symbol} ({self.strategy_type})')
-            plt.ylabel('Account Value')
-            plt.grid(True)
+            if equity_curve and len(equity_curve) > 0:
+                plt.plot(equity_curve)
+                plt.title(f'Equity Curve - {self.symbol} ({self.strategy_type})')
+                plt.ylabel('Account Value')
+                plt.grid(True)
+            else:
+                plt.text(0.5, 0.5, "No equity data available", ha='center', va='center')
             
             # Trade distribution
             plt.subplot(2, 2, 3)
-            trades_df = pd.DataFrame(trades)
-            trades_df['pnl'].hist(bins=20)
-            plt.title('PnL Distribution')
-            plt.xlabel('PnL')
-            plt.ylabel('Frequency')
+            if trades and len(trades) > 0:
+                trades_df = pd.DataFrame(trades)
+                if 'pnl' in trades_df.columns and len(trades_df) > 0:
+                    trades_df['pnl'].hist(bins=min(20, len(trades_df)))
+                    plt.title('PnL Distribution')
+                    plt.xlabel('PnL')
+                    plt.ylabel('Frequency')
+                else:
+                    plt.text(0.5, 0.5, "No PnL data available", ha='center', va='center')
+            else:
+                plt.text(0.5, 0.5, "No trades data available", ha='center', va='center')
             
             # Drawdown
             plt.subplot(2, 2, 4)
-            equity_array = np.array(equity_curve)
-            peak = np.maximum.accumulate(equity_array)
-            drawdown = (peak - equity_array) / peak * 100
-            plt.plot(drawdown)
-            plt.title('Drawdown (%)')
-            plt.xlabel('Trade #')
-            plt.ylabel('Drawdown %')
-            plt.grid(True)
+            if equity_curve and len(equity_curve) > 1:
+                equity_array = np.array(equity_curve)
+                peak = np.maximum.accumulate(equity_array)
+                drawdown = (peak - equity_array) / peak * 100
+                plt.plot(drawdown)
+                plt.title('Drawdown (%)')
+                plt.xlabel('Trade #')
+                plt.ylabel('Drawdown %')
+                plt.grid(True)
+            else:
+                plt.text(0.5, 0.5, "Insufficient equity data for drawdown calculation", ha='center', va='center')
             
             plt.tight_layout()
             
@@ -447,3 +499,4 @@ class Backtester:
             
         except Exception as e:
             self.logger.error(f"Error plotting results: {str(e)}")
+            self.logger.error(traceback.format_exc())
