@@ -1,14 +1,15 @@
 import pandas as pd
 import numpy as np
 import logging
+import os
 import sys
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
-import os
 
-sys.path.append('/Users/tungnt/Downloads/game')
+# Add the parent directory to sys.path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 from data.market_data import MarketData
 from indicators.technical_indicators import TechnicalIndicators

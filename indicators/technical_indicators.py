@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import os
 import sys
+import logging
 # Replace talib with ta library
 import ta
 from ta.trend import MACD, EMAIndicator, SMAIndicator, ADXIndicator
@@ -12,6 +13,9 @@ from ta.volume import MFIIndicator, OnBalanceVolumeIndicator, VolumeWeightedAver
 # Add the parent directory to sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
+
+# Initialize logger
+logger = logging.getLogger(__name__)
 
 class TechnicalIndicators:
     @staticmethod
@@ -95,18 +99,29 @@ class TechnicalIndicators:
         rsi = RSIIndicator(close=df['close'], window=14)
         df['rsi'] = rsi.rsi()
         
-        # Directional Movement Index
-        adx_indicator = ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14)
-        df['adx'] = adx_indicator.adx()
-        df['di_plus'] = adx_indicator.adx_pos()
-        df['di_minus'] = adx_indicator.adx_neg()
+        # Directional Movement Index - handle division by zero errors
+        try:
+            adx_indicator = ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14)
+            df['adx'] = adx_indicator.adx()
+            df['di_plus'] = adx_indicator.adx_pos()
+            df['di_minus'] = adx_indicator.adx_neg()
+            
+            # Replace NaN values with 0
+            df['adx'] = df['adx'].fillna(0)
+            df['di_plus'] = df['di_plus'].fillna(0)
+            df['di_minus'] = df['di_minus'].fillna(0)
+        except Exception as e:
+            logger.warning(f"Error calculating ADX indicator: {e}")
+            # Set default values if calculation fails
+            df['adx'] = 0
+            df['di_plus'] = 0
+            df['di_minus'] = 0
         
         return df
     
     @staticmethod
     def add_volatility_indicators(df):
         """Add volatility indicators."""
-        # ATR - Average True Range
         atr_indicator = AverageTrueRange(high=df['high'], low=df['low'], close=df['close'], window=14)
         df['atr'] = atr_indicator.average_true_range()
         

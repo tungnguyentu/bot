@@ -52,8 +52,8 @@ def initialize_bot():
         if config.TRADING_MODE == "paper_trading":
             logger.info("Connecting to Binance Futures testnet for paper trading")
             client = Client(
-                config.BINANCE_API_KEY, 
-                config.BINANCE_API_SECRET,
+                config.BINANCE_TESTNET_API_KEY,  # Use testnet-specific keys
+                config.BINANCE_TESTNET_API_SECRET,
                 testnet=True  # Use testnet
             )
         else:
@@ -66,8 +66,9 @@ def initialize_bot():
         # For paper trading, log the test account balance
         if config.TRADING_MODE == "paper_trading":
             try:
-                account_info = client.futures_account_balance()
-                usdt_balance = next((item for item in account_info if item['asset'] == 'USDT'), {}).get('balance', 0)
+                # Use futures_account() for testnet instead of futures_account_balance()
+                account_info = client.futures_account()
+                usdt_balance = next((item['balance'] for item in account_info['assets'] if item['asset'] == 'USDT'), 0)
                 logger.info(f"Testnet account USDT balance: {usdt_balance}")
             except Exception as e:
                 logger.error(f"Error fetching testnet account balance: {e}")

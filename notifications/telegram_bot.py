@@ -8,6 +8,7 @@ import threading
 import queue
 from datetime import datetime
 import time
+import re
 
 # Add the parent directory to sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -44,7 +45,7 @@ class TelegramNotifier:
             try:
                 if not self.message_queue.empty():
                     message = self.message_queue.get()
-                    asyncio.run(self._send_message(message))
+                    self._send_message_sync(message)  # Use sync version instead of async
                     self.message_queue.task_done()
                 else:
                     # Sleep briefly to avoid high CPU usage
@@ -52,19 +53,51 @@ class TelegramNotifier:
             except Exception as e:
                 logger.error(f"Error processing message queue: {e}")
                 time.sleep(5)  # Longer sleep on error
-                
-    async def _send_message(self, message):
-        """Send a message to the configured Telegram chat."""
+    
+    def _send_message_sync(self, message):
+        """Send a message synchronously to the configured Telegram chat."""
         if not self.bot:
             return
             
         try:
-            await self.bot.send_message(chat_id=self.chat_id, text=message, parse_mode="Markdown")
+            # Sanitize markdown to prevent parsing errors
+            message = self._sanitize_markdown(message)
+            
+            # Use send_message synchronously
+            self.bot.send_message(chat_id=self.chat_id, text=message, parse_mode="Markdown")
             logger.debug(f"Telegram message sent: {message[:50]}...")
         except TelegramError as e:
             logger.error(f"Error sending Telegram message: {e}")
         except Exception as e:
             logger.error(f"Unexpected error sending Telegram message: {e}")
+    
+    async def _send_message(self, message):
+        """This async version is kept for compatibility but not used."""
+        return  # Do nothing - we're using the sync version instead
+    
+    def _sanitize_markdown(self, text):
+        """
+        Sanitize markdown text to prevent parsing errors.
+        Escapes characters that might cause issues with Telegram's Markdown parser.
+        """
+        # Replace problematic characters in code blocks and other markdown
+        # Ensure closing characters for * and _ and `
+        
+        # First fix any unclosed formatting
+        open_stars = text.count('*') 
+        if open_stars % 2 != 0:
+            text += '*'  # Add closing star
+            
+        open_underscores = text.count('_')
+        if open_underscores % 2 != 0:
+            text += '_'  # Add closing underscore
+            
+        # If there are backticks, make sure they're properly closed
+        open_backticks = text.count('`')
+        if open_backticks % 2 != 0:
+            text += '`'  # Add closing backtick
+            
+        return text
             
     def send_trade_notification(self, action, symbol, side, quantity, price, reasoning=None):
         """
@@ -93,6 +126,8 @@ class TelegramNotifier:
         message += f"*Time*: {timestamp}\n"
         
         if reasoning:
+            # Sanitize reasoning text
+            reasoning = reasoning.replace('*', '').replace('_', '').replace('`', '')
             message += f"\n*Analysis*:\n{reasoning}\n"
             
         # Add a footer

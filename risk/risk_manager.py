@@ -32,9 +32,15 @@ class RiskManager:
         """Load trading history or initialize if first run."""
         # In a production system, this would load from database
         try:
-            # Get account balance
-            account_info = self.client.futures_account_balance()
-            usdt_balance = next((item for item in account_info if item['asset'] == 'USDT'), {}).get('balance', 0)
+            # Get account balance - using different methods for testnet vs production
+            if config.TRADING_MODE == "paper_trading":
+                # For testnet
+                account_info = self.client.futures_account()
+                usdt_balance = next((item['balance'] for item in account_info['assets'] if item['asset'] == 'USDT'), 0)
+            else:
+                # For production
+                account_info = self.client.futures_account_balance()
+                usdt_balance = next((item['balance'] for item in account_info if item['asset'] == 'USDT'), 0)
             
             self.initial_balance = float(usdt_balance)
             self.max_balance = self.initial_balance
@@ -60,9 +66,16 @@ class RiskManager:
             float: Position size in base currency
         """
         try:
-            # Get account balance
-            account_info = self.client.futures_account_balance()
-            usdt_balance = next((item for item in account_info if item['asset'] == 'USDT'), {}).get('balance', 0)
+            # Get account balance - using different methods for testnet vs production
+            if config.TRADING_MODE == "paper_trading":
+                # For testnet
+                account_info = self.client.futures_account()
+                usdt_balance = next((item['balance'] for item in account_info['assets'] if item['asset'] == 'USDT'), 0)
+            else:
+                # For production
+                account_info = self.client.futures_account_balance()
+                usdt_balance = next((item['balance'] for item in account_info if item['asset'] == 'USDT'), 0)
+                
             account_balance = float(usdt_balance)
             
             # Calculate risk amount
@@ -104,9 +117,16 @@ class RiskManager:
             bool: True if maximum drawdown is exceeded
         """
         try:
-            # Get current account balance
-            account_info = self.client.futures_account_balance()
-            usdt_balance = next((item for item in account_info if item['asset'] == 'USDT'), {}).get('balance', 0)
+            # Get current account balance - using different methods for testnet vs production
+            if config.TRADING_MODE == "paper_trading":
+                # For testnet
+                account_info = self.client.futures_account()
+                usdt_balance = next((item['balance'] for item in account_info['assets'] if item['asset'] == 'USDT'), 0)
+            else:
+                # For production
+                account_info = self.client.futures_account_balance()
+                usdt_balance = next((item['balance'] for item in account_info if item['asset'] == 'USDT'), 0)
+                
             current_balance = float(usdt_balance)
             
             # Update max balance if current balance is higher
