@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-import talib
+import ta
 
 import config
 from utils.logger import setup_logger
@@ -103,37 +103,33 @@ class SwingStrategy:
         """Calculate technical indicators for the swing trading strategy."""
         try:
             # MACD
-            macd, macd_signal, macd_hist = talib.MACD(
-                df['close'].values,
-                fastperiod=self.params['macd_fast'],
-                slowperiod=self.params['macd_slow'],
-                signalperiod=self.params['macd_signal']
+            macd_indicator = ta.trend.MACD(
+                close=df['close'],
+                window_fast=self.params['macd_fast'],
+                window_slow=self.params['macd_slow'],
+                window_sign=self.params['macd_signal']
             )
-            df['macd'] = macd
-            df['macd_signal'] = macd_signal
-            df['macd_hist'] = macd_hist
+            df['macd'] = macd_indicator.macd()
+            df['macd_signal'] = macd_indicator.macd_signal()
+            df['macd_hist'] = macd_indicator.macd_diff()
             
             # Ichimoku Cloud components
-            high_values = df['high'].values
-            low_values = df['low'].values
-            close_values = df['close'].values
-            
             # Tenkan-sen (Conversion Line)
-            period9_high = pd.Series(df['high']).rolling(window=self.params['ichimoku_tenkan']).max()
-            period9_low = pd.Series(df['low']).rolling(window=self.params['ichimoku_tenkan']).min()
+            period9_high = df['high'].rolling(window=self.params['ichimoku_tenkan']).max()
+            period9_low = df['low'].rolling(window=self.params['ichimoku_tenkan']).min()
             df['tenkan_sen'] = (period9_high + period9_low) / 2
             
             # Kijun-sen (Base Line)
-            period26_high = pd.Series(df['high']).rolling(window=self.params['ichimoku_kijun']).max()
-            period26_low = pd.Series(df['low']).rolling(window=self.params['ichimoku_kijun']).min()
+            period26_high = df['high'].rolling(window=self.params['ichimoku_kijun']).max()
+            period26_low = df['low'].rolling(window=self.params['ichimoku_kijun']).min()
             df['kijun_sen'] = (period26_high + period26_low) / 2
             
             # Senkou Span A (Leading Span A)
             df['senkou_span_a'] = ((df['tenkan_sen'] + df['kijun_sen']) / 2).shift(self.params['ichimoku_kijun'])
             
             # Senkou Span B (Leading Span B)
-            period52_high = pd.Series(df['high']).rolling(window=self.params['ichimoku_senkou_span_b']).max()
-            period52_low = pd.Series(df['low']).rolling(window=self.params['ichimoku_senkou_span_b']).min()
+            period52_high = df['high'].rolling(window=self.params['ichimoku_senkou_span_b']).max()
+            period52_low = df['low'].rolling(window=self.params['ichimoku_senkou_span_b']).min()
             df['senkou_span_b'] = ((period52_high + period52_low) / 2).shift(self.params['ichimoku_kijun'])
             
             # Chikou Span (Lagging Span)
@@ -143,12 +139,13 @@ class SwingStrategy:
             df['volume_ma'] = df['volume'].rolling(window=self.params['volume_ma']).mean()
             
             # ATR for volatility assessment
-            df['atr'] = talib.ATR(
-                df['high'].values, 
-                df['low'].values, 
-                df['close'].values, 
-                timeperiod=14
+            atr_indicator = ta.volatility.AverageTrueRange(
+                high=df['high'],
+                low=df['low'],
+                close=df['close'],
+                window=14
             )
+            df['atr'] = atr_indicator.average_true_range()
             
             return df
             
