@@ -1,68 +1,85 @@
 # Binance Futures Trading Bot
 
-This bot implements automated trading strategies for Binance Futures, supporting both scalping and swing trading approaches.
+A fully automated Binance Futures trading bot that implements both scalping and swing trading strategies. The bot uses technical indicators to make trading decisions, manages risk dynamically, and sends real-time notifications via Telegram.
 
 ## Features
 
-- **Dual trading strategies**: Scalping and Swing Trading
-- **Dynamic strategy switching** based on market volatility
-- **Risk management** with position sizing and drawdown protection
-- **Trailing stop-loss** implementation
-- **Telegram notifications** with detailed trade reasoning
-- **Backtesting system** with performance metrics
-- **Paper trading** using Binance Futures testnet
+- **Dual Trading Strategies**:
+  - **Scalping**: Short-term trades using RSI, Bollinger Bands, and Moving Averages
+  - **Swing Trading**: Medium-term trades using Ichimoku Cloud, MACD, and volume analysis
 
-## Setup Instructions
+- **Smart Strategy Selection**: Automatically selects the optimal strategy based on current market conditions
 
-1. Run the setup script to prepare the environment:
-   ```
-   ./setup.sh
-   ```
+- **Advanced Order Types**: Supports limit, market, and stop orders with automatic stop-loss and take-profit
 
-2. Edit the `.env` file with your API keys:
-   - For live trading: Use your regular Binance Futures API keys
-   - For paper trading: Get testnet API keys from https://testnet.binancefuture.com/
+- **Dynamic Risk Management**: Position sizing based on account balance and volatility
 
-3. Start the bot:
-   ```
-   ./startup.sh
+- **Real-time Monitoring**: Sends detailed trade notifications and status reports via Telegram
+
+- **Comprehensive Backtesting**: Test your strategies with historical data before trading real funds
+
+## Installation
+
+1. Clone the repository
+   ```bash
+   git clone https://github.com/yourusername/binance-futures-bot.git
+   cd binance-futures-bot
    ```
 
-## Using Binance Futures Testnet
-
-For paper trading, the bot uses the Binance Futures testnet. Follow these steps:
-
-1. Go to https://testnet.binancefuture.com/
-2. Register for a testnet account
-3. Generate API keys (top-right menu → API Management)
-4. Add the testnet API keys to your .env file:
+2. Install dependencies
+   ```bash
+   pip install -r requirements.txt
    ```
-   BINANCE_TESTNET_API_KEY=your_testnet_api_key_here
-   BINANCE_TESTNET_API_SECRET=your_testnet_api_secret_here
+
+3. Create your configuration file
+   ```bash
+   cp .env.example .env
    ```
-5. The testnet provides 10,000 USDT for testing purposes
 
-## Running Modes
+4. Edit the `.env` file with your Binance API keys and Telegram credentials
 
-- **Backtesting mode**: Test strategies on historical data
-  ```
-  ./startup.sh --mode backtest
-  ```
+## Usage
 
-- **Paper trading mode**: Trade with real-time data but simulated orders (testnet)
-  ```
-  ./startup.sh --mode paper
-  ```
+### Live Trading
 
-- **Live trading mode**: Trade with real funds (use with caution!)
-  ```
-  ./startup.sh --mode live
-  ```
+```bash
+python main.py --mode live
+```
+
+### Backtesting
+
+```bash
+python main.py --mode backtest --strategy scalping --symbol BTCUSDT --days 30 --initial 10000
+```
+
+#### Backtesting Parameters:
+- `--strategy`: Choose between 'scalping' or 'swing'
+- `--symbol`: Trading pair to backtest (e.g., BTCUSDT, ETHUSDT)
+- `--days`: Number of days to backtest (default: 30)
+- `--initial`: Initial balance for backtesting (default: 10000)
 
 ## Configuration
 
-Edit `config.py` to customize:
+Most settings can be configured in the `config.py` file:
+
 - Trading pairs
 - Strategy parameters
 - Risk management settings
 - Timeframes
+
+For API credentials and secrets, use the `.env` file.
+
+## Safety Features
+
+- Maximum drawdown limit (default 20%)
+- Maximum number of concurrent trades
+- Automatic error recovery and restart mechanism
+- Extensive logging and monitoring
+
+## Disclaimer
+
+This bot is for educational purposes only. Trading cryptocurrency futures involves significant risk. Only trade with funds you can afford to lose. The developers of this bot are not responsible for any financial losses incurred through its use.
+
+## License
+
+MIT

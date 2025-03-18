@@ -1,156 +1,157 @@
-import pandas as pd
 import numpy as np
-import os
-import sys
-import logging
+import pandas as pd
+import talib
 
-# Add the parent directory to sys.path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
-from indicators.technical_indicators import TechnicalIndicators
-
-logger = logging.getLogger(__name__)
+from utils.logger import setup_logger
 
 class SwingStrategy:
-    def __init__(self):
-        """Initialize the Swing Trading Strategy."""
-        self.name = "Swing Trading"
-        self.timeframe = config.TRADING_TIMEFRAMES["swing"]
-        self.description = "Medium-term strategy using Ichimoku Cloud, MACD, and ADX"
+    def __init__(self, client):
+        self.client = client
+        self.logger = setup_logger('swing_strategy', 'logs/strategies.log')
+        self.params = config.STRATEGY_PARAMS['swing']
         
-    def analyze(self, df):
+    def generate_signal(self, symbol):
         """
-        Analyze market data using swing trading strategy indicators.
+        Generate trading signals based on swing trading strategy.
         
-        Args:
-            df: DataFrame with OHLCV data and indicators
-            
         Returns:
-            dict: Analysis results with signals and reasoning
+            dict: Signal details including action, price levels, and reasoning,
+                  or None if no valid signal
         """
-        if len(df) < 80:  # Need enough data for Ichimoku calculations
-            return {"signal": "neutral", "strength": 0, "reasoning": "Insufficient data for analysis"}
-        
-        # Ensure all required indicators are calculated
-        df = TechnicalIndicators.add_swing_indicators(df)
-        
-        # Get the latest candles for analysis
-        latest = df.iloc[-1]
-        previous = df.iloc[-2]
-        
-        # Initialize signal parameters
-        signal = "neutral"
-        strength = 0
-        reasons = []
-        
-        # ========== LONG SIGNALS ==========
-        long_signals = 0
-        
-        # Ichimoku signals
-        if latest['close'] > latest['ichimoku_span_a'] and latest['close'] > latest['ichimoku_span_b']:
-            # Price above cloud (bullish)
-            long_signals += 2
-            reasons.append(f"Price above Ichimoku cloud")
+        try:
+            # Get recent price data
+            df = self.client.get_historical_klines(
+                symbol,
+                config.TIMEFRAMES['swing'],
+                limit=100
+            )
             
-            if latest['ichimoku_conversion'] > latest['ichimoku_base']:
-                # Bullish TK cross
-                long_signals += 1
-                reasons.append(f"Bullish Ichimoku TK cross")
-        
-        # MACD signals
-        if previous['macd'] < previous['macd_signal'] and latest['macd'] > latest['macd_signal']:
-            # MACD crossed above signal line
-            long_signals += 2
-            reasons.append(f"MACD crossed above signal line")
-        
-        # ADX signal (strong trend with positive DI)
-        if latest['adx'] > 25 and latest['di_plus'] > latest['di_minus']:
-            long_signals += 2
-            reasons.append(f"Strong uptrend: ADX={latest['adx']:.2f} with +DI>{'-DI'}")
+            if df.empty:
+                self.logger.warning(f"No data available for {symbol}")
+                return None
+                
+            # Calculate indicators
+            df = self.calculate_indicators(df)
             
-        # Volume confirmation
-        if latest['volume'] > latest['volume_ma'] * 1.2:
-            long_signals += 1
-            reasons.append(f"Volume spike: {latest['volume']:.2f} > {latest['volume_ma']:.2f}")
-        
-        # RSI not overbought
-        if latest['rsi'] > 40 and latest['rsi'] < 70:
-            long_signals += 1
-            reasons.append(f"RSI in positive zone but not overbought: {latest['rsi']:.2f}")
-        
-        # ========== SHORT SIGNALS ==========
-        short_signals = 0
-        
-        # Ichimoku signals
-        if latest['close'] < latest['ichimoku_span_a'] and latest['close'] < latest['ichimoku_span_b']:
-            # Price below cloud (bearish)
-            short_signals += 2
-            reasons.append(f"Price below Ichimoku cloud")
+            # Check for signals
+            last_row = df.iloc[-1]
+            prev_row = df.iloc[-2]
             
-            if latest['ichimoku_conversion'] < latest['ichimoku_base']:
-                # Bearish TK cross
-                short_signals += 1
-                reasons.append(f"Bearish Ichimoku TK cross")
-        
-        # MACD signals
-        if previous['macd'] > previous['macd_signal'] and latest['macd'] < latest['macd_signal']:
-            # MACD crossed below signal line
-            short_signals += 2
-            reasons.append(f"MACD crossed below signal line")
-        
-        # ADX signal (strong trend with negative DI)
-        if latest['adx'] > 25 and latest['di_minus'] > latest['di_plus']:
-            short_signals += 2
-            reasons.append(f"Strong downtrend: ADX={latest['adx']:.2f} with -DI>+DI")
+            # Default signal is no action
+            signal = None
             
-        # Volume confirmation
-        if latest['volume'] > latest['volume_ma'] * 1.2:
-            short_signals += 1
-            reasons.append(f"Volume spike: {latest['volume']:.2f} > {latest['volume_ma']:.2f}")
-        
-        # RSI not oversold
-        if latest['rsi'] < 60 and latest['rsi'] > 30:
-            short_signals += 1
-            reasons.append(f"RSI in negative zone but not oversold: {latest['rsi']:.2f}")
-        
-        # ========== SIGNAL DETERMINATION ==========
-        # Minimum threshold for a valid swing signal is 5 points
-        threshold = 5
-        
-        if long_signals >= threshold and long_signals > short_signals:
-            signal = "buy"
-            strength = min(long_signals / 10, 1.0)
-        elif short_signals >= threshold and short_signals > long_signals:
-            signal = "sell"
-            strength = min(short_signals / 10, 1.0)
-        
-        # Return analysis results
-        return {
-            "signal": signal,
-            "strength": strength,
-            "reasoning": "; ".join(reasons) if reasons else "No significant signals detected"
-        }
-    
-    def get_take_profit_price(self, entry_price, side, atr=None):
-        """Calculate take profit price based on ATR or fixed percentage."""
-        if side == "buy":
-            if atr:
-                return entry_price + (atr * 3)  # 3 times ATR for take profit (swing trades aim for larger moves)
-            return entry_price * 1.03  # 3% default take profit
-        elif side == "sell":
-            if atr:
-                return entry_price - (atr * 3)
-            return entry_price * 0.97  # 3% default take profit
-        return entry_price
-        
-    def get_stop_loss_price(self, entry_price, side, atr=None):
-        """Calculate stop loss price based on ATR or fixed percentage."""
-        if side == "buy":
-            if atr:
-                return entry_price - (atr * 2)  # 2 times ATR for stop loss
-            return entry_price * 0.985  # 1.5% default stop loss
-        elif side == "sell":
-            if atr:
-                return entry_price + (atr * 2)
-            return entry_price * 1.015  # 1.5% default stop loss
-        return entry_price
+            # Buy signal conditions based on Ichimoku Cloud and MACD
+            if (last_row['close'] > last_row['senkou_span_a'] and
+                last_row['close'] > last_row['senkou_span_b'] and
+                last_row['macd'] > last_row['macd_signal'] and
+                prev_row['macd'] <= prev_row['macd_signal'] and
+                last_row['volume'] > last_row['volume_ma']):
+                
+                # Calculate price targets
+                entry_price = last_row['close']
+                stop_loss = min(last_row['kijun_sen'], last_row['senkou_span_b']) * 0.99  # Just below support
+                take_profit = entry_price + (1.5 * (entry_price - stop_loss))  # 1.5 risk-reward ratio
+                
+                reasoning = (
+                    f"Price above Ichimoku Cloud + "
+                    f"MACD bullish crossover + "
+                    f"Volume above average ({last_row['volume']:.2f} > {last_row['volume_ma']:.2f})"
+                )
+                
+                signal = {
+                    'action': 'BUY',
+                    'price': entry_price,
+                    'stop_loss': stop_loss,
+                    'take_profit': take_profit,
+                    'reasoning': reasoning
+                }
+                
+            # Sell signal conditions
+            elif (last_row['close'] < last_row['senkou_span_a'] and
+                  last_row['close'] < last_row['senkou_span_b'] and
+                  last_row['macd'] < last_row['macd_signal'] and
+                  prev_row['macd'] >= prev_row['macd_signal'] and
+                  last_row['volume'] > last_row['volume_ma']):
+                
+                # Calculate price targets
+                entry_price = last_row['close']
+                stop_loss = max(last_row['kijun_sen'], last_row['senkou_span_a']) * 1.01  # Just above resistance
+                take_profit = entry_price - (1.5 * (stop_loss - entry_price))  # 1.5 risk-reward ratio
+                
+                reasoning = (
+                    f"Price below Ichimoku Cloud + "
+                    f"MACD bearish crossover + "
+                    f"Volume above average ({last_row['volume']:.2f} > {last_row['volume_ma']:.2f})"
+                )
+                
+                signal = {
+                    'action': 'SELL',
+                    'price': entry_price,
+                    'stop_loss': stop_loss,
+                    'take_profit': take_profit,
+                    'reasoning': reasoning
+                }
+                
+            return signal
+            
+        except Exception as e:
+            self.logger.error(f"Error generating swing signal for {symbol}: {str(e)}")
+            return None
+            
+    def calculate_indicators(self, df):
+        """Calculate technical indicators for the swing trading strategy."""
+        try:
+            # MACD
+            macd, macd_signal, macd_hist = talib.MACD(
+                df['close'].values,
+                fastperiod=self.params['macd_fast'],
+                slowperiod=self.params['macd_slow'],
+                signalperiod=self.params['macd_signal']
+            )
+            df['macd'] = macd
+            df['macd_signal'] = macd_signal
+            df['macd_hist'] = macd_hist
+            
+            # Ichimoku Cloud components
+            high_values = df['high'].values
+            low_values = df['low'].values
+            close_values = df['close'].values
+            
+            # Tenkan-sen (Conversion Line)
+            period9_high = pd.Series(df['high']).rolling(window=self.params['ichimoku_tenkan']).max()
+            period9_low = pd.Series(df['low']).rolling(window=self.params['ichimoku_tenkan']).min()
+            df['tenkan_sen'] = (period9_high + period9_low) / 2
+            
+            # Kijun-sen (Base Line)
+            period26_high = pd.Series(df['high']).rolling(window=self.params['ichimoku_kijun']).max()
+            period26_low = pd.Series(df['low']).rolling(window=self.params['ichimoku_kijun']).min()
+            df['kijun_sen'] = (period26_high + period26_low) / 2
+            
+            # Senkou Span A (Leading Span A)
+            df['senkou_span_a'] = ((df['tenkan_sen'] + df['kijun_sen']) / 2).shift(self.params['ichimoku_kijun'])
+            
+            # Senkou Span B (Leading Span B)
+            period52_high = pd.Series(df['high']).rolling(window=self.params['ichimoku_senkou_span_b']).max()
+            period52_low = pd.Series(df['low']).rolling(window=self.params['ichimoku_senkou_span_b']).min()
+            df['senkou_span_b'] = ((period52_high + period52_low) / 2).shift(self.params['ichimoku_kijun'])
+            
+            # Chikou Span (Lagging Span)
+            df['chikou_span'] = df['close'].shift(-self.params['ichimoku_kijun'])
+            
+            # Volume moving average
+            df['volume_ma'] = df['volume'].rolling(window=self.params['volume_ma']).mean()
+            
+            # ATR for volatility assessment
+            df['atr'] = talib.ATR(
+                df['high'].values, 
+                df['low'].values, 
+                df['close'].values, 
+                timeperiod=14
+            )
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating indicators: {str(e)}")
+            return df

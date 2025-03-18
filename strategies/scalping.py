@@ -1,142 +1,178 @@
-import pandas as pd
 import numpy as np
-import os
-import sys
-import logging
+import pandas as pd
+import ta
 
-# Add the parent directory to sys.path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
-from indicators.technical_indicators import TechnicalIndicators
-
-logger = logging.getLogger(__name__)
+from utils.logger import setup_logger
 
 class ScalpingStrategy:
-    def __init__(self):
-        """Initialize the Scalping Strategy."""
-        self.name = "Scalping"
-        self.timeframe = config.TRADING_TIMEFRAMES["scalping"]
-        self.description = "Short-term strategy using RSI, Bollinger Bands, and Moving Averages"
+    def __init__(self, client):
+        self.client = client
+        self.logger = setup_logger('scalping_strategy', 'logs/strategies.log')
+        self.params = config.STRATEGY_PARAMS['scalping']
         
-    def analyze(self, df):
+    def generate_signal(self, symbol):
         """
-        Analyze market data using scalping strategy indicators.
+        Generate trading signals based on scalping strategy.
         
-        Args:
-            df: DataFrame with OHLCV data and indicators
-            
         Returns:
-            dict: Analysis results with signals and reasoning
+            dict: Signal details including action, price levels, and reasoning,
+                  or None if no valid signal
         """
-        if len(df) < 30:  # Need enough data for indicators
-            return {"signal": "neutral", "strength": 0, "reasoning": "Insufficient data for analysis"}
-        
-        # Ensure all required indicators are calculated
-        df = TechnicalIndicators.add_scalping_indicators(df)
-        
-        # Get the latest candle for analysis
-        latest = df.iloc[-1]
-        previous = df.iloc[-2]
-        
-        # Initialize signal parameters
-        signal = "neutral"
-        strength = 0
-        reasons = []
-        
-        # ========== LONG SIGNALS ==========
-        long_signals = 0
-        
-        # RSI oversold and rising
-        if latest['rsi'] < config.SCALPING_RSI_OVERSOLD and latest['rsi'] > previous['rsi']:
-            long_signals += 2
-            reasons.append(f"RSI oversold and rising ({latest['rsi']:.2f})")
-        
-        # Price near or below lower Bollinger Band
-        if latest['close'] <= latest['bb_lower'] * 1.005:
-            long_signals += 2
-            reasons.append(f"Price at/below lower Bollinger Band (Price: {latest['close']:.2f}, BB: {latest['bb_lower']:.2f})")
-        
-        # EMA crossover (short crossing above long)
-        if previous['ema_short'] < previous['ema_long'] and latest['ema_short'] > latest['ema_long']:
-            long_signals += 3
-            reasons.append(f"EMA crossover: short crossed above long")
-        
-        # MACD histogram turning positive
-        if previous['macd_hist'] < 0 and latest['macd_hist'] > 0:
-            long_signals += 1
-            reasons.append(f"MACD histogram turned positive")
+        try:
+            # Get recent price data
+            df = self.client.get_historical_klines(
+                symbol,
+                config.TIMEFRAMES['scalping'],
+                limit=100
+            )
             
-        # Bullish candlestick patterns
-        if latest['engulfing_bullish'] > 0 or latest['hammer'] > 0 or latest['morning_star'] > 0:
-            long_signals += 1
-            reasons.append(f"Bullish candlestick pattern detected")
-        
-        # ========== SHORT SIGNALS ==========
-        short_signals = 0
-        
-        # RSI overbought and falling
-        if latest['rsi'] > config.SCALPING_RSI_OVERBOUGHT and latest['rsi'] < previous['rsi']:
-            short_signals += 2
-            reasons.append(f"RSI overbought and falling ({latest['rsi']:.2f})")
-        
-        # Price near or above upper Bollinger Band
-        if latest['close'] >= latest['bb_upper'] * 0.995:
-            short_signals += 2
-            reasons.append(f"Price at/above upper Bollinger Band (Price: {latest['close']:.2f}, BB: {latest['bb_upper']:.2f})")
-        
-        # EMA crossover (short crossing below long)
-        if previous['ema_short'] > previous['ema_long'] and latest['ema_short'] < latest['ema_long']:
-            short_signals += 3
-            reasons.append(f"EMA crossover: short crossed below long")
-        
-        # MACD histogram turning negative
-        if previous['macd_hist'] > 0 and latest['macd_hist'] < 0:
-            short_signals += 1
-            reasons.append(f"MACD histogram turned negative")
+            if df.empty:
+                self.logger.warning(f"No data available for {symbol}")
+                return None
+                
+            # Calculate indicators
+            df = self.calculate_indicators(df)
             
-        # Bearish candlestick patterns
-        if latest['engulfing_bearish'] < 0 or latest['hanging_man'] < 0 or latest['evening_star'] < 0:
-            short_signals += 1
-            reasons.append(f"Bearish candlestick pattern detected")
-        
-        # ========== SIGNAL DETERMINATION ==========
-        # Minimum threshold for a valid signal is 4 points
-        threshold = 4
-        
-        if long_signals >= threshold and long_signals > short_signals:
-            signal = "buy"
-            strength = min(long_signals / 10, 1.0)  # Scale between 0 and 1
-        elif short_signals >= threshold and short_signals > long_signals:
-            signal = "sell"
-            strength = min(short_signals / 10, 1.0)  # Scale between 0 and 1
-        
-        # Return analysis results
-        return {
-            "signal": signal,
-            "strength": strength,
-            "reasoning": "; ".join(reasons) if reasons else "No significant signals detected"
-        }
-    
-    def get_take_profit_price(self, entry_price, side, atr=None):
-        """Calculate take profit price based on ATR or fixed percentage."""
-        if side == "buy":
-            if atr:
-                return entry_price + (atr * 1.5)  # 1.5 times ATR for take profit
-            return entry_price * 1.01  # 1% default take profit
-        elif side == "sell":
-            if atr:
-                return entry_price - (atr * 1.5)
-            return entry_price * 0.99  # 1% default take profit
-        return entry_price
-        
-    def get_stop_loss_price(self, entry_price, side, atr=None):
-        """Calculate stop loss price based on ATR or fixed percentage."""
-        if side == "buy":
-            if atr:
-                return entry_price - (atr * 1)  # 1 times ATR for stop loss
-            return entry_price * 0.995  # 0.5% default stop loss
-        elif side == "sell":
-            if atr:
-                return entry_price + (atr * 1)
-            return entry_price * 1.005  # 0.5% default stop loss
-        return entry_price
+            # Check for signals
+            last_row = df.iloc[-1]
+            prev_row = df.iloc[-2]
+            
+            # Default signal is no action
+            signal = None
+            
+            # Buy signal conditions
+            if (last_row['rsi'] < self.params['rsi_oversold'] and 
+                last_row['close'] < last_row['lower_band'] and
+                last_row['close'] > last_row['ma_fast'] and
+                last_row['ma_fast'] > prev_row['ma_fast']):
+                
+                # Calculate price targets
+                entry_price = last_row['close']
+                stop_loss = entry_price - (2 * (last_row['atr']))
+                take_profit = entry_price + (3 * (last_row['atr']))
+                
+                reasoning = (
+                    f"RSI oversold ({last_row['rsi']:.2f}) + "
+                    f"Price below lower Bollinger Band + "
+                    f"Price above fast MA ({last_row['ma_fast']:.2f}) + "
+                    f"Fast MA rising"
+                )
+                
+                signal = {
+                    'action': 'BUY',
+                    'price': entry_price,
+                    'stop_loss': stop_loss,
+                    'take_profit': take_profit,
+                    'reasoning': reasoning
+                }
+                
+            # Sell signal conditions
+            elif (last_row['rsi'] > self.params['rsi_overbought'] and 
+                  last_row['close'] > last_row['upper_band'] and
+                  last_row['close'] < last_row['ma_fast'] and
+                  last_row['ma_fast'] < prev_row['ma_fast']):
+                
+                # Calculate price targets
+                entry_price = last_row['close']
+                stop_loss = entry_price + (2 * (last_row['atr']))
+                take_profit = entry_price - (3 * (last_row['atr']))
+                
+                reasoning = (
+                    f"RSI overbought ({last_row['rsi']:.2f}) + "
+                    f"Price above upper Bollinger Band + "
+                    f"Price below fast MA ({last_row['ma_fast']:.2f}) + "
+                    f"Fast MA declining"
+                )
+                
+                signal = {
+                    'action': 'SELL',
+                    'price': entry_price,
+                    'stop_loss': stop_loss,
+                    'take_profit': take_profit,
+                    'reasoning': reasoning
+                }
+                
+            return signal
+            
+        except Exception as e:
+            self.logger.error(f"Error generating scalping signal for {symbol}: {str(e)}")
+            return None
+            
+    def calculate_indicators(self, df):
+        """Calculate technical indicators for the scalping strategy."""
+        try:
+            # RSI
+            rsi_indicator = ta.momentum.RSIIndicator(
+                close=df['close'], 
+                window=self.params['rsi_period']
+            )
+            df['rsi'] = rsi_indicator.rsi()
+            
+            # Bollinger Bands
+            bb_indicator = ta.volatility.BollingerBands(
+                close=df['close'],
+                window=self.params['bb_period'],
+                window_dev=self.params['bb_std']
+            )
+            df['upper_band'] = bb_indicator.bollinger_hband()
+            df['middle_band'] = bb_indicator.bollinger_mavg()
+            df['lower_band'] = bb_indicator.bollinger_lband()
+            
+            # Moving Averages
+            ema_fast = ta.trend.EMAIndicator(
+                close=df['close'], 
+                window=self.params['ma_fast']
+            )
+            ema_slow = ta.trend.EMAIndicator(
+                close=df['close'], 
+                window=self.params['ma_slow']
+            )
+            df['ma_fast'] = ema_fast.ema_indicator()
+            df['ma_slow'] = ema_slow.ema_indicator()
+            
+            # ATR for stop loss calculation
+            atr_indicator = ta.volatility.AverageTrueRange(
+                high=df['high'],
+                low=df['low'],
+                close=df['close'],
+                window=14
+            )
+            df['atr'] = atr_indicator.average_true_range()
+            
+            # Calculate candlestick patterns manually
+            # Bullish engulfing
+            df['engulfing_bullish'] = (
+                (df['close'] > df['open'].shift(1)) &
+                (df['open'] < df['close'].shift(1)) &
+                (df['close'] > df['open']) &
+                (df['close'].shift(1) < df['open'].shift(1))
+            )
+            
+            # Hammer pattern (simplified)
+            df['hammer'] = (
+                (df['close'] > df['open']) &  # Bullish candle
+                ((df['high'] - df['close']) < 0.3 * (df['close'] - df['low'])) &  # Small upper shadow
+                ((df['close'] - df['open']) < 0.5 * (df['open'] - df['low']))  # Body is in upper half
+            )
+            
+            # Bearish engulfing
+            df['engulfing_bearish'] = (
+                (df['close'] < df['open'].shift(1)) &
+                (df['open'] > df['close'].shift(1)) &
+                (df['close'] < df['open']) &
+                (df['close'].shift(1) > df['open'].shift(1))
+            )
+            
+            # Shooting star (simplified)
+            df['shooting_star'] = (
+                (df['close'] < df['open']) &  # Bearish candle
+                ((df['high'] - df['open']) > 2 * (df['open'] - df['close'])) &  # Long upper shadow
+                ((df['close'] - df['low']) < 0.3 * (df['high'] - df['close']))  # Small lower shadow
+            )
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating indicators: {str(e)}")
+            return df
