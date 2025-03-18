@@ -337,7 +337,10 @@ class Backtester:
                     'win_rate': 0,
                     'profit_factor': 0,
                     'sharpe_ratio': 0,
-                    'max_drawdown': 0
+                    'max_drawdown': 0,
+                    'total_return': 0.0,  # Added missing key
+                    'gross_profit': 0.0,  # Added missing key
+                    'gross_loss': 0.0     # Added missing key
                 }
                 
             # Convert trades to DataFrame for analysis
@@ -351,24 +354,31 @@ class Backtester:
             win_rate = winning_trades / total_trades if total_trades > 0 else 0
             
             # Profit metrics
-            gross_profit = trades_df[trades_df['pnl'] > 0]['pnl'].sum()
-            gross_loss = abs(trades_df[trades_df['pnl'] <= 0]['pnl'].sum())
+            gross_profit = trades_df[trades_df['pnl'] > 0]['pnl'].sum() if winning_trades > 0 else 0.0
+            gross_loss = abs(trades_df[trades_df['pnl'] <= 0]['pnl'].sum()) if losing_trades > 0 else 0.0
             
             profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
             
             # Risk metrics
             equity_curve = np.array(equity_curve)
             
+            # Calculate total return
+            total_return = 0.0
+            if len(equity_curve) > 1:
+                total_return = (equity_curve[-1] / equity_curve[0]) - 1
+            
             # Calculate daily returns (assuming equity_curve is daily)
-            returns = np.diff(equity_curve) / equity_curve[:-1]
+            returns = np.diff(equity_curve) / equity_curve[:-1] if len(equity_curve) > 1 else np.array([0])
             
             # Sharpe ratio (annualized)
             sharpe_ratio = np.sqrt(252) * np.mean(returns) / np.std(returns) if np.std(returns) > 0 else 0
             
             # Max drawdown
-            peak = np.maximum.accumulate(equity_curve)
-            drawdown = (peak - equity_curve) / peak
-            max_drawdown = drawdown.max()
+            max_drawdown = 0.0
+            if len(equity_curve) > 1:
+                peak = np.maximum.accumulate(equity_curve)
+                drawdown = (peak - equity_curve) / peak
+                max_drawdown = drawdown.max() if len(drawdown) > 0 else 0.0
             
             return {
                 'total_trades': total_trades,
@@ -376,7 +386,7 @@ class Backtester:
                 'profit_factor': profit_factor,
                 'sharpe_ratio': sharpe_ratio,
                 'max_drawdown': max_drawdown,
-                'total_return': (equity_curve[-1] / equity_curve[0]) - 1,
+                'total_return': total_return,
                 'gross_profit': gross_profit,
                 'gross_loss': gross_loss
             }
@@ -389,6 +399,9 @@ class Backtester:
                 'profit_factor': 0,
                 'sharpe_ratio': 0,
                 'max_drawdown': 0,
+                'total_return': 0.0,  # Added missing key
+                'gross_profit': 0.0,  # Added missing key
+                'gross_loss': 0.0,    # Added missing key
                 'error': str(e)
             }
             
