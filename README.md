@@ -1,107 +1,68 @@
-# AI-Powered Trading Bot for Binance Futures
+# Binance Futures Trading Bot
 
-This trading bot uses machine learning and technical indicators to generate trading signals for Binance Futures. It can operate in backtest, test (using Binance Testnet), or live trading modes.
+This bot implements automated trading strategies for Binance Futures, supporting both scalping and swing trading approaches.
 
 ## Features
 
-- **AI-Powered Predictions**: Uses XGBoost to predict price movements
-- **Technical Indicators**: Combines multiple indicators for signal generation
-  - Bollinger Bands (14, 2)
-  - RSI (6)
-  - MACD (5, 13, 1)
-  - VWAP
-  - ATR (14)
-- **Risk Management**: Dynamic stop-loss and take-profit levels based on ATR
-- **Multiple Modes**: Backtest, test (Binance Testnet), and live trading
-- **Telegram Notifications**: Trade signals, executions, and performance reports
-- **Investment Management**: Control your trading capital with the invest parameter
-- **Quick Testing**: Immediately open test positions with the quick flag
+- **Dual trading strategies**: Scalping and Swing Trading
+- **Dynamic strategy switching** based on market volatility
+- **Risk management** with position sizing and drawdown protection
+- **Trailing stop-loss** implementation
+- **Telegram notifications** with detailed trade reasoning
+- **Backtesting system** with performance metrics
+- **Paper trading** using Binance Futures testnet
 
-## Setup
+## Setup Instructions
 
-1. Clone the repository
-2. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-3. Copy the example environment file and update it with your API keys:
-```bash
-cp .env.example .env
-```
-4. Edit the `.env` file with your Binance API keys and Telegram credentials
+1. Run the setup script to prepare the environment:
+   ```
+   ./setup.sh
+   ```
 
-## Usage
+2. Edit the `.env` file with your API keys:
+   - For live trading: Use your regular Binance Futures API keys
+   - For paper trading: Get testnet API keys from https://testnet.binancefuture.com/
 
-### Training the Model
+3. Start the bot:
+   ```
+   ./startup.sh
+   ```
 
-```bash
-python main.py --symbol SOLUSDT --mode backtest --train
-```
+## Using Binance Futures Testnet
 
-### Backtesting
+For paper trading, the bot uses the Binance Futures testnet. Follow these steps:
 
-```bash
-python main.py --symbol SOLUSDT --mode backtest --invest 500
-```
+1. Go to https://testnet.binancefuture.com/
+2. Register for a testnet account
+3. Generate API keys (top-right menu → API Management)
+4. Add the testnet API keys to your .env file:
+   ```
+   BINANCE_TESTNET_API_KEY=your_testnet_api_key_here
+   BINANCE_TESTNET_API_SECRET=your_testnet_api_secret_here
+   ```
+5. The testnet provides 10,000 USDT for testing purposes
 
-### Test Trading (Binance Testnet)
+## Running Modes
 
-```bash
-python main.py --symbol SOLUSDT --mode test --leverage 20 --invest 100
-```
+- **Backtesting mode**: Test strategies on historical data
+  ```
+  ./startup.sh --mode backtest
+  ```
 
-### Quick Test (Immediate Position Opening)
+- **Paper trading mode**: Trade with real-time data but simulated orders (testnet)
+  ```
+  ./startup.sh --mode paper
+  ```
 
-```bash
-python main.py --symbol SOLUSDT --mode test --leverage 20 --invest 100 --quick
-```
+- **Live trading mode**: Trade with real funds (use with caution!)
+  ```
+  ./startup.sh --mode live
+  ```
 
-### Live Trading
+## Configuration
 
-```bash
-python main.py --symbol SOLUSDT --mode live --leverage 20 --invest 100
-```
-
-## Command Line Arguments
-
-- `--symbol`: Trading pair (default: SOLUSDT)
-- `--leverage`: Leverage to use (default: 20)
-- `--mode`: Trading mode - 'backtest', 'test', or 'live' (default: test)
-- `--interval`: Timeframe for data (default: 1h)
-- `--quantity`: Trading quantity in base asset (default: 0.1)
-- `--sl_atr_multiplier`: Stop Loss ATR multiplier (default: 1.5)
-- `--tp_atr_multiplier`: Take Profit ATR multiplier (default: 2.0)
-- `--train`: Train the model before trading
-- `--invest`: Amount to use as margin for trading (default: 100.0 USDT)
-- `--quick`: Force immediate position opening for quick testing in test mode
-
-## Trading Strategy
-
-The bot follows a Mean Reversion Strategy with AI validation:
-
-1. Identifies price deviations from the mean
-2. Confirms reversals with multiple technical indicators
-3. Uses AI model to validate trade signals and calculate confidence
-4. Implements dynamic risk management based on market volatility
-
-## Risk Management
-
-The bot uses the following risk management principles:
-- Maximum 2% risk per trade based on your margin amount
-- Position sizing automatically calculated using stop loss and margin value
-- Leveraged positions are supported (e.g., with --leverage 20, your $100 margin provides $2000 buying power)
-- The bot will never risk more than your specified margin amount
-
-## Telegram Notifications
-
-The bot sends notifications for:
-- Trade entry (Buy/Sell, price, reason)
-- Trade exit (SL/TP hit, manual exit, reason)
-- Performance reports (PnL, win rate, max drawdown)
-
-## Warnings
-
-- Cryptocurrency trading involves significant risk
-- Always start with small position sizes
-- Test thoroughly before using with real funds
-- Past performance does not guarantee future results
+Edit `config.py` to customize:
+- Trading pairs
+- Strategy parameters
+- Risk management settings
+- Timeframes

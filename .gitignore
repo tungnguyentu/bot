@@ -1,37 +1,35 @@
-logs/
-.env
+# Virtual environment
 venv/
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.pyw
-*.pyz
-*.pywz
-*.pyzw
-*.pyz
-*.pyz.zip
-*.pyz.tar
-*.pyz.gz
-*.pyz.bz2
-*.pyz.rar
-*.pyz.7z
-*.pyz.xz
-*.pyz.wim
-*.pyz.iso
-*.pyz.vhd
-*.pyz.vhdx
-*.pyz.vdi
-*.pyz.vmdk
-*.pyz.vhd
-*.pyz.vhdx
-*.pyz.vdi
-*.pyz.vmdk
-*.pyz.vhd
-*.pyz.vhdx
-*.pyz.vdi
-*.pyz.vmdk
-plots/
+env/
+
+# Logs
+logs/
+*.log
+
+# Backtest results
 backtest_results/
+
+# Environment variables
+.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# VSCode
+.vscode/
+
+# Operating System Files
 .DS_Store
+Thumbs.db
 
